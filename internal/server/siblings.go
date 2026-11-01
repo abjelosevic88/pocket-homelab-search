@@ -311,7 +311,7 @@ type appSection struct {
 	MS    int64     `json:"ms"`
 }
 
-var reRouteField = regexp.MustCompile(`\{([a-z_.]+)\}`)
+var reRouteField = regexp.MustCompile(`\{([a-z_.]+)(\*?)\}`)
 
 // itemURL is an item's page in the app: route with {id} (the item's id, from
 // idPaths) and any other {field} filled from the row; the app's start page
@@ -323,7 +323,7 @@ func itemURL(public, route string, row map[string]any, idPaths []string) string 
 	}
 	missing := false
 	out := reRouteField.ReplaceAllStringFunc(route, func(m string) string {
-		name := m[1 : len(m)-1]
+		name := strings.TrimSuffix(m[1:len(m)-1], "*")
 		v := ""
 		if name == "id" {
 			v = pick(row, idPaths)
@@ -332,6 +332,14 @@ func itemURL(public, route string, row map[string]any, idPaths []string) string 
 		}
 		if v == "" {
 			missing = true
+		}
+		// {path*}: a path, its slashes kept and each part escaped ("/My docs/a.pdf" → "/My%20docs/a.pdf")
+		if strings.HasSuffix(m, "*}") {
+			parts := strings.Split(v, "/")
+			for i, p := range parts {
+				parts[i] = url.PathEscape(p)
+			}
+			return strings.Join(parts, "/")
 		}
 		return url.PathEscape(v)
 	})
@@ -372,7 +380,8 @@ func (s *Server) searchApp(ctx context.Context, u *store.User, st store.Settings
 		if a.search.q == "" && !strings.Contains(strings.ToLower(it.Title+" "+it.Snippet+" "+it.Link), ql) {
 			continue
 		}
-		it.Snippet = oneLine(stripMarkup(it.Snippet), 220)
+		// Pocket Files marks matched words with \x01…\x02
+		it.Snippet = oneLine(stripMarkup(strings.NewReplacer("\x01", "", "\x02", "").Replace(it.Snippet)), 220)
 		it.Strong = strongMatch(it.Title, q)
 		it.URL = itemURL(sib.public, a.search.route, row, a.search.id)
 		sec.Items = append(sec.Items, it)

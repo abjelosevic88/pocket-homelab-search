@@ -638,3 +638,15 @@ func TestInstantAnswersInSearch(t *testing.T) {
 		t.Fatalf("bob's instant = %v", m["instant"])
 	}
 }
+
+func TestItemURLKeepsPathSlashes(t *testing.T) {
+	row := map[string]any{"space": "home", "path": "/My docs/report 1.pdf"}
+	got := itemURL("https://drive.example.com/", "/f/{space}{path*}", row, []string{"path"})
+	if want := "https://drive.example.com/f/home/My%20docs/report%201.pdf"; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+	// ordinary fields still escape everything
+	if got := itemURL("https://x", "/note/{id}", map[string]any{"id": "a/b"}, []string{"id"}); got != "https://x/note/a%2Fb" {
+		t.Fatalf("got %s", got)
+	}
+}
