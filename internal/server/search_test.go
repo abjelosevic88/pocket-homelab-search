@@ -523,3 +523,21 @@ func TestYourAppsDirect(t *testing.T) {
 		t.Fatalf("route = %s", got)
 	}
 }
+
+func TestAddressBarSuggestionsWithoutLogin(t *testing.T) {
+	a := newApp(t)
+	a.ok(a.alice, "GET", "/api/v1/search?q=golang+secret", nil)
+	// the browser's address bar, no cookie: the engine's suggestions, nothing personal
+	code, b, h := a.raw("", "GET", "/api/v1/suggest?format=opensearch&q=gol", nil, "")
+	if code != 200 || h.Get("Content-Type") != "application/x-suggestions+json" || string(b) != "[\"gol\",[\"golang\",\"goland\"]]\n" {
+		t.Fatalf("anonymous opensearch → %d %q %s", code, h.Get("Content-Type"), b)
+	}
+	if code, _, _ := a.raw("", "GET", "/api/v1/suggest?q=gol", nil, ""); code != 401 {
+		t.Fatalf("anonymous app suggest → %d", code)
+	}
+	// signed in: the person's own earlier search comes first
+	code, b, _ = a.raw(a.alice, "GET", "/api/v1/suggest?format=opensearch&q=gol", nil, "")
+	if code != 200 || !strings.Contains(string(b), "golang secret") {
+		t.Fatalf("signed-in opensearch → %d %s", code, b)
+	}
+}

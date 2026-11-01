@@ -374,6 +374,41 @@ func (s *Server) handleSuggest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleSuggestMaybeSignedIn serves suggestions to a signed-in person, and to
+// a browser's address bar that asks without the login cookie (OpenSearch
+// format only): then only the engine's suggestions — nothing personal.
+func (s *Server) handleSuggestMaybeSignedIn(w http.ResponseWriter, r *http.Request) {
+	u, app, err := s.resolveAuth(r)
+	if errors.Is(err, errLinkScope) {
+		writeErr(w, http.StatusForbidden, "this Pocket Core link does not cover "+r.Method+" "+r.URL.Path)
+		return
+	}
+	if err == nil && u != nil {
+		ctx := context.WithValue(r.Context(), userKey, u)
+		if app != "" {
+			ctx = context.WithValue(ctx, linkAppKey, app)
+		}
+		s.handleSuggest(w, r.WithContext(ctx))
+		return
+	}
+	if r.URL.Query().Get("format") != "opensearch" {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	out := []string{}
+	if q != "" && len(q) <= 200 && !strings.HasPrefix(q, "!") && s.engine.Configured() {
+		sctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if list, err := s.engine.Suggest(sctx, q, ""); err == nil {
+			out = list[:min(len(list), 8)]
+		}
+	}
+	w.Header().Set("Content-Type", "application/x-suggestions+json")
+	w.Header().Set("Cache-Control", "private, max-age=60")
+	_ = json.NewEncoder(w).Encode([]any{r.URL.Query().Get("q"), out})
+}
+
 // handleEngines: GET /api/v1/engines — the engines per category and whether
 // this person uses each one.
 func (s *Server) handleEngines(w http.ResponseWriter, r *http.Request) {

@@ -49,6 +49,9 @@ func (s *Server) Router() http.Handler {
 		r.Get("/auth/status", s.handleAuthStatus)
 		r.Get("/auth/oidc/start", s.handleOIDCStart)
 		r.Get("/auth/oidc/callback", s.handleOIDCCallback)
+		// signed in: history + engine + bangs; a browser's address bar without the
+		// login cookie: the engine's suggestions only
+		r.Get("/suggest", s.handleSuggestMaybeSignedIn)
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
@@ -58,7 +61,6 @@ func (s *Server) Router() http.Handler {
 
 			r.Get("/search", s.handleSearch)
 			r.Get("/search/apps", s.handleSearchApps)
-			r.Get("/suggest", s.handleSuggest)
 			r.Get("/engines", s.handleEngines)
 			r.Post("/answer", s.handleAnswer)
 			r.Get("/read", s.handleRead)

@@ -406,9 +406,11 @@ function Browser() {
       </Section>
       <Section title="Chrome, Edge, Brave, Vivaldi" icon="globe">
         <ol className="set-steps">
+          <li>Having this page open once is enough: the browser finds Pocket Search by itself, with its suggestions.</li>
           <li>Open <b>Settings → Search engine → Manage search engines</b> (Edge: Privacy, search and services → Address bar and search).</li>
-          <li>Next to <b>Site search</b>, click <b>Add</b>: name “Pocket Search”, shortcut “s”, address <code>{base}/search?q=%s</code>.</li>
-          <li>In its ⋮ menu choose <b>Make default</b>. Visiting this page once also offers it automatically.</li>
+          <li>Find <b>Pocket Search</b> with the shortcut <code>{base.replace(/^https?:\/\//, '')}</code> (under <b>Site search</b>, or <b>Inactive shortcuts</b> → <b>Activate</b>), then choose <b>Make default</b> in its ⋮ menu.</li>
+          <li>Don't add it with <b>Add</b> by hand: that form has no place for suggestions, so the address bar would show none. If you already did, delete that one.</li>
+          <li>Suggestions need <b>Settings → You and Google → Sync and Google services → Autocomplete searches and URLs</b> switched on.</li>
         </ol>
       </Section>
       <Section title="Firefox" icon="globe">
