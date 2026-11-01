@@ -265,34 +265,57 @@ a.res-saved:hover { text-decoration: none; filter: brightness(.95); }
 /* ---------- the results page: a search engine's layout ----------
    No sidebar (Layout), the logo and the search box in the top bar, a wide
    reading column lined up under the search box, the answer and your apps beside it. */
-.tb-brand { display: inline-flex; align-items: center; gap: 9px; flex-shrink: 0; width: 196px; padding-left: 4px; color: var(--text); font-size: 17px; letter-spacing: -.015em; text-decoration: none; }
+.tb-brand { display: inline-flex; align-items: center; gap: 9px; flex-shrink: 0; padding-left: 4px; color: var(--text); font-size: 17px; letter-spacing: -.015em; text-decoration: none; }
 .tb-brand:hover { text-decoration: none; color: var(--text); }
 .tb-brand img { width: 30px; height: 30px; }
 .tb-brand b { font-weight: 700; }
-.topbar-slot { flex: 1; min-width: 0; max-width: 760px; margin: 0 16px 0 8px; }
+.tb-brand span { display: none; }
+.topbar-slot { flex: 1; min-width: 0; max-width: 820px; margin: 0 16px 0 8px; }
 .topbar-slot:empty { margin: 0; }
 .topbar-slot .sbox-md .sbox-input { height: 42px; font-size: 15.5px; }
 .topbar-slot .sbox { z-index: 50; }
 .app.is-results .topbar { height: 64px; }
 .app.is-results .topbar > .spacer { display: none; }
-.app.is-results .content-inner { max-width: 1440px; margin: 0; padding-left: 28px; padding-right: 36px; }
-.app.is-results .srp-bar { padding-top: 0; }
-.app.is-results.no-sidebar:not(.is-mobile):not(.drawer-mode) .srp { padding-left: 222px; }
-.app.is-results.no-sidebar:not(.is-mobile):not(.drawer-mode) .srp-bar { margin-left: -250px; padding-left: 250px; }
-.app.is-results .srp-body.with-side.is-wide { grid-template-columns: minmax(0, 720px) minmax(320px, 440px); justify-content: start; gap: 56px; }
+
+/* The results line up under the search box: --srp-indent is how far the box starts
+   from the content's edge (menu button + logo). Columns grow with the window. */
+.app.is-results { --srp-indent: 0px; }
+.app.is-results .content-inner { max-width: none; margin: 0; padding: 24px 32px 80px 28px; }
+.app.is-results .srp { padding-left: var(--srp-indent); }
+.app.is-results .srp-bar { margin-left: calc(-28px - var(--srp-indent)); padding-left: calc(28px + var(--srp-indent)); margin-right: -32px; padding-right: 32px; padding-top: 0; }
+.app.is-results .srp-body.with-side.is-wide { grid-template-columns: minmax(0, 820px) clamp(300px, 28vw, 460px); justify-content: start; gap: clamp(28px, 3.2vw, 64px); }
 .app.is-results .srp-body.with-side.is-wide .srp-side { top: 64px; max-height: calc(100vh - 64px - 64px - 24px); }
-.app.is-results .res-title { font-size: 19.5px; line-height: 1.32; }
-.app.is-results .res-site { font-size: 13px; }
-.app.is-results .res-list { gap: 10px; }
+@media (min-width: 1100px) {
+  .app.is-results.no-sidebar { --srp-indent: 64px; }
+}
+@media (min-width: 1500px) {
+  .tb-brand { width: 196px; }
+  .tb-brand span { display: inline; }
+  .app.is-results.no-sidebar { --srp-indent: 222px; }
+}
+@media (min-width: 1900px) {
+  .app.is-results .srp-body.with-side.is-wide { grid-template-columns: minmax(0, 880px) clamp(340px, 26vw, 540px); }
+  .topbar-slot { max-width: 880px; }
+}
+.app.is-results.with-sidebar { --srp-indent: 0px; }
+
+/* easier to read: bigger titles and text, more room between results */
+.app.is-results .res-title { font-size: 20px; line-height: 1.32; }
+.app.is-results .res-site { font-size: 13.5px; }
+.app.is-results .res-list { gap: 12px; }
+.app.is-results .res-snippet { font-size: 15.5px; line-height: 1.62; color: var(--text); opacity: .86; }
+.app.is-results .res-meta { font-size: 12.5px; }
 @media (max-width: 1099px) {
   .app.is-results .content-inner { padding-left: 20px; padding-right: 20px; }
-  .tb-brand { width: auto; }
-  .tb-brand span { display: none; }
+  .app.is-results .srp-bar { margin-left: -20px; padding-left: 20px; margin-right: -20px; padding-right: 20px; }
 }
 @media (max-width: 767px) {
   .app.is-results .topbar { height: calc(56px + env(safe-area-inset-top)); }
   .topbar-slot { margin: 0 6px; }
   .topbar-slot .sbox-md .sbox-input { height: 38px; font-size: 15px; }
+  .app.is-results .content-inner { padding: 12px 14px calc(100px + env(safe-area-inset-bottom)); }
+  .app.is-results .srp-bar { margin-left: -14px; padding-left: 14px; margin-right: -14px; padding-right: 14px; }
+  .app.is-results .res-title { font-size: 18px; }
+  .app.is-results .res-snippet { font-size: 15px; }
 }
-.app.is-results .res-snippet { font-size: 15px; line-height: 1.6; }
 @media (max-width: 767px) { .srp-time { width: 112px; } }

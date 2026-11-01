@@ -117,8 +117,26 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	txt, err := cl.Complete(actx, answerSystem, p.String(), false)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "The AI did not answer: "+err.Error())
+		s.log.Warn("ai answer failed", "err", err)
+		writeErr(w, http.StatusBadGateway, aiTrouble(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, answerOut{Answer: strings.TrimSpace(txt), Sources: sources, Provider: provider, MS: time.Since(start).Milliseconds()})
+}
+
+// aiTrouble says in plain words why there is no answer; the technical detail
+// stays in the log.
+func aiTrouble(err error) string {
+	e := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(e, "connection refused"), strings.Contains(e, "no such host"), strings.Contains(e, "eof"):
+		return "Pocket AI can't be reached right now (it may be restarting). Try again in a moment."
+	case strings.Contains(e, "deadline exceeded"), strings.Contains(e, "timeout"):
+		return "The AI took too long to answer. Try again."
+	case strings.Contains(e, "401"), strings.Contains(e, "403"), strings.Contains(e, "unauthorized"):
+		return "The AI refused the request: check Settings → AI (or the Pocket AI link in Pocket Core)."
+	case strings.Contains(e, "429"):
+		return "The AI is busy (too many requests). Try again in a minute."
+	}
+	return "The AI did not answer: " + err.Error()
 }
