@@ -1,0 +1,525 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/abjelosevic88/pocket-homelab-search/internal/config"
+	"github.com/abjelosevic88/pocket-homelab-search/internal/engine"
+	"github.com/abjelosevic88/pocket-homelab-search/internal/read"
+	"github.com/abjelosevic88/pocket-homelab-search/internal/store"
+)
+
+type app struct {
+	t     *testing.T
+	url   string
+	s     *Server
+	st    *store.Store
+	alice string // admin, owner of the box
+	bob   string
+	ids   map[string]int64
+	eng   *fakeEngine
+}
+
+// fakeEngine answers like SearXNG's JSON format and remembers what it was asked.
+type fakeEngine struct {
+	mu    sync.Mutex
+	asked []url.Values
+	srv   *httptest.Server
+	pages map[string]string // other paths: a tiny web site for the reading view
+}
+
+func (f *fakeEngine) last() url.Values {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.asked) == 0 {
+		return nil
+	}
+	return f.asked[len(f.asked)-1]
+}
+
+func newApp(t *testing.T) *app {
+	t.Helper()
+	cfg := testConfig(t.TempDir())
+	cfg.FetchPrivate = true // the fake site runs on localhost
+	cfg.BaseURL = "http://search.test"
+	cfg.EngineTimeout = 5e9
+	f := &fakeEngine{pages: map[string]string{}}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			f.mu.Lock()
+			f.asked = append(f.asked, r.URL.Query())
+			f.mu.Unlock()
+			if r.URL.Query().Get("format") != "json" {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"query":"x","results":[
+				{"url":"https://www.pinterest.com/pin/1","title":"Pin","content":"a pin","engine":"google","engines":["google"],"score":3,"category":"general"},
+				{"url":"https://medium.com/post","title":"Post","content":"words","engine":"brave","engines":["brave","google"],"score":2.5,"category":"general"},
+				{"url":"https://example.org/a","title":"Example A","content":"aaa","engine":"brave","engines":["brave"],"score":2,"category":"general","publishedDate":"2026-10-01T00:00:00"},
+				{"url":"https://en.wikipedia.org/wiki/X","title":"X - Wikipedia","content":"wiki","engine":"wikipedia","engines":["wikipedia"],"score":1,"category":"general"}
+			],"answers":["42"],"corrections":[],"infoboxes":[{"infobox":"X","id":"https://en.wikipedia.org/wiki/X","content":"About X","urls":[{"title":"Wikipedia","url":"https://en.wikipedia.org/wiki/X"}],"attributes":[{"label":"Born","value":"1900"}]}],
+			"suggestions":["x y"],"unresponsive_engines":[["duckduckgo","CAPTCHA"]]}`)
+		case "/autocompleter":
+			_ = json.NewEncoder(w).Encode([]any{r.URL.Query().Get("q"), []string{"golang", "goland"}})
+		case "/config":
+			_, _ = io.WriteString(w, `{"engines":[{"name":"google","categories":["general"],"enabled":true,"shortcut":"go"},{"name":"brave","categories":["general"],"enabled":true,"shortcut":"br"},{"name":"mojeek","categories":["general"],"enabled":false,"shortcut":"mjk"}]}`)
+		default:
+			f.mu.Lock()
+			body, ok := f.pages[r.URL.Path]
+			f.mu.Unlock()
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, ".png") {
+				w.Header().Set("Content-Type", "image/png")
+			} else {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			}
+			_, _ = io.WriteString(w, body)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	cfg.SearXNGURL = f.srv.URL
+	st := openTestStore(t, cfg)
+	ctx := context.Background()
+	a := &app{t: t, st: st, ids: map[string]int64{}, eng: f}
+	for _, u := range []*store.User{{Email: "alice@example.com", Name: "Alice", Role: "admin"}, {Email: "bob@example.com", Name: "Bob", Role: "member"}} {
+		if err := st.CreateUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		tok, _, _ := st.CreateAPIToken(ctx, u.ID, "t")
+		a.ids[u.Name] = u.ID
+		if u.Name == "Alice" {
+			a.alice = tok
+		} else {
+			a.bob = tok
+		}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	a.s = New(cfg, st, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	if err := a.s.Bootstrap(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(a.s.Router())
+	t.Cleanup(ts.Close)
+	a.url = ts.URL
+	return a
+}
+
+func (a *app) raw(auth, method, path string, body io.Reader, ct string) (int, []byte, http.Header) {
+	a.t.Helper()
+	req, _ := http.NewRequest(method, a.url+path, body)
+	if ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", "Bearer "+auth)
+	}
+	cl := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, err := cl.Do(req)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	return res.StatusCode, b, res.Header
+}
+
+func (a *app) call(auth, method, path string, body any) (int, map[string]any, []any) {
+	a.t.Helper()
+	var rd io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	}
+	code, raw, _ := a.raw(auth, method, path, rd, "application/json")
+	var m map[string]any
+	var l []any
+	if json.Unmarshal(raw, &m) != nil {
+		_ = json.Unmarshal(raw, &l)
+	}
+	return code, m, l
+}
+
+func (a *app) ok(auth, method, path string, body any) map[string]any {
+	a.t.Helper()
+	code, m, _ := a.call(auth, method, path, body)
+	if code >= 300 {
+		a.t.Fatalf("%s %s → %d %v", method, path, code, m)
+	}
+	return m
+}
+
+func urls(m map[string]any) []string {
+	var out []string
+	for _, r := range m["results"].([]any) {
+		out = append(out, r.(map[string]any)["url"].(string))
+	}
+	return out
+}
+
+func TestSearchAppliesOnlyMyRules(t *testing.T) {
+	a := newApp(t)
+	a.ok(a.alice, "POST", "/api/v1/rules", map[string]any{"domain": "https://www.Pinterest.com/x", "action": "block"})
+	a.ok(a.alice, "POST", "/api/v1/rules", map[string]any{"domain": "wikipedia.org", "action": "pin"})
+	a.ok(a.alice, "POST", "/api/v1/rules", map[string]any{"domain": "medium.com", "action": "lower"})
+
+	m := a.ok(a.alice, "GET", "/api/v1/search?q=x", nil)
+	got := urls(m)
+	want := []string{"https://en.wikipedia.org/wiki/X", "https://example.org/a", "https://medium.com/post"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("alice's order = %v, want %v", got, want)
+	}
+	if m["hidden"].(float64) != 1 || m["hidden_sites"].([]any)[0] != "pinterest.com" {
+		t.Fatalf("hidden = %v %v", m["hidden"], m["hidden_sites"])
+	}
+	first := m["results"].([]any)[0].(map[string]any)
+	if first["rule"] != "pin" || first["domain"] != "en.wikipedia.org" {
+		t.Fatalf("first = %v", first)
+	}
+	if c := m["results"].([]any)[2].(map[string]any)["content"]; c != "words" {
+		t.Fatalf("content = %q", c)
+	}
+	if m["answers"].([]any)[0].(map[string]any)["text"] != "42" || len(m["infoboxes"].([]any)) != 1 || len(m["unresponsive"].([]any)) != 1 {
+		t.Fatalf("extras = %v %v %v", m["answers"], m["infoboxes"], m["unresponsive"])
+	}
+
+	// Bob has no rules: the engine's order, nothing hidden
+	m = a.ok(a.bob, "GET", "/api/v1/search?q=x&nohistory=1", nil)
+	if got := urls(m); len(got) != 4 || got[0] != "https://www.pinterest.com/pin/1" {
+		t.Fatalf("bob's results = %v", got)
+	}
+	// the rule counted what it changed
+	rules := a.st
+	list, _ := rules.ListRules(context.Background(), a.ids["Alice"])
+	for _, r := range list {
+		if r.Hits == 0 {
+			t.Fatalf("rule %s has no hits", r.Domain)
+		}
+	}
+}
+
+func TestSafeSearchAndEnginesFollowMySettings(t *testing.T) {
+	a := newApp(t)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"safe_search": 2, "language": "de", "engines_off": []string{"google"}, "engines_on": []string{"mojeek"}})
+	a.ok(a.alice, "GET", "/api/v1/search?q=x&cat=general&time=week&page=2", nil)
+	q := a.eng.last()
+	if q.Get("safesearch") != "2" || q.Get("language") != "de" || q.Get("time_range") != "week" || q.Get("pageno") != "2" || q.Get("categories") != "general" {
+		t.Fatalf("engine asked %v", q)
+	}
+	if q.Get("engines") != "brave,mojeek" {
+		t.Fatalf("engines = %q, want brave,mojeek", q.Get("engines"))
+	}
+	// Bob's settings are his own
+	a.ok(a.bob, "GET", "/api/v1/search?q=y", nil)
+	if q := a.eng.last(); q.Get("safesearch") != "1" || q.Get("engines") != "" || q.Get("language") != "auto" {
+		t.Fatalf("bob asked %v", q)
+	}
+	if m := a.ok(a.bob, "GET", "/api/v1/settings", nil); m["safe_search"].(float64) != 1 {
+		t.Fatalf("bob's safe search = %v", m["safe_search"])
+	}
+	// every engine of a category off → a plain message, no search
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"engines_off": []string{"google", "brave"}, "engines_on": []string{}})
+	if code, m, _ := a.call(a.alice, "GET", "/api/v1/search?q=z", nil); code != 502 || !strings.Contains(m["error"].(string), "switched off") {
+		t.Fatalf("all off → %d %v", code, m)
+	}
+}
+
+func TestOtherPeoplesThingsAreNotFound(t *testing.T) {
+	a := newApp(t)
+	rule := a.ok(a.alice, "POST", "/api/v1/rules", map[string]any{"domain": "example.com", "action": "boost"})
+	bang := a.ok(a.alice, "POST", "/api/v1/bangs", map[string]any{"trigger": "!ex", "url": "https://example.com/?s={q}"})
+	a.ok(a.alice, "GET", "/api/v1/search?q=secret+stuff", nil)
+	hist, _, _ := a.st.ListHistory(context.Background(), a.ids["Alice"], store.HistoryFilter{})
+	if len(hist) != 1 || hist[0].Query != "secret stuff" {
+		t.Fatalf("history = %+v", hist)
+	}
+	rid, bid := int64(rule["id"].(float64)), int64(bang["id"].(float64))
+	for _, c := range []struct{ method, path string }{
+		{"PUT", fmt.Sprintf("/api/v1/rules/%d", rid)},
+		{"DELETE", fmt.Sprintf("/api/v1/rules/%d", rid)},
+		{"PUT", fmt.Sprintf("/api/v1/bangs/%d", bid)},
+		{"DELETE", fmt.Sprintf("/api/v1/bangs/%d", bid)},
+		{"DELETE", fmt.Sprintf("/api/v1/history/%d", hist[0].ID)},
+	} {
+		if code, _, _ := a.call(a.bob, c.method, c.path, map[string]any{"domain": "x.com", "action": "block", "trigger": "zz", "url": "https://x.com/{q}"}); code != 404 {
+			t.Fatalf("bob %s %s → %d, want 404", c.method, c.path, code)
+		}
+	}
+	// Bob's lists are empty; his own "!ex" is free
+	if _, _, l := a.call(a.bob, "GET", "/api/v1/rules", nil); len(l) != 0 {
+		t.Fatalf("bob sees rules %v", l)
+	}
+	if m := a.ok(a.bob, "GET", "/api/v1/history", nil); m["total"].(float64) != 0 {
+		t.Fatalf("bob sees history %v", m)
+	}
+	if m := a.ok(a.bob, "GET", "/api/v1/bangs", nil); len(m["mine"].([]any)) != 0 {
+		t.Fatalf("bob sees bangs %v", m["mine"])
+	}
+	if code, _, _ := a.call(a.bob, "POST", "/api/v1/bangs", map[string]any{"trigger": "ex", "url": "https://bob.example/?q={q}"}); code != 201 {
+		t.Fatalf("bob's own !ex → %d", code)
+	}
+	// Bob clearing everything leaves Alice's history alone
+	a.ok(a.bob, "POST", "/api/v1/history/clear", map[string]any{"range": "all"})
+	if hist, _, _ := a.st.ListHistory(context.Background(), a.ids["Alice"], store.HistoryFilter{}); len(hist) != 1 {
+		t.Fatalf("alice's history after bob cleared his = %d", len(hist))
+	}
+}
+
+func TestBangs(t *testing.T) {
+	for in, want := range map[string][2]string{"!w eiffel tower": {"w", "eiffel tower"}, "eiffel tower !W": {"w", "eiffel tower"}, "!yt": {"yt", ""}, "a!b c": {"", ""}, "price !": {"", ""}} {
+		tr, rest, _ := splitBang(in)
+		if tr != want[0] || rest != want[1] {
+			t.Errorf("splitBang(%q) = %q %q, want %q %q", in, tr, rest, want[0], want[1])
+		}
+	}
+	a := newApp(t)
+	m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape("!w eiffel tower"), nil)
+	if m["redirect"] != "https://en.wikipedia.org/wiki/Special:Search?search=eiffel%20tower" {
+		t.Fatalf("redirect = %v", m["redirect"])
+	}
+	if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape("cats !i"), nil); m["redirect"] != "/search?cat=images&q=cats" {
+		t.Fatalf("in-app bang = %v", m["redirect"])
+	}
+	// my own !w wins over Wikipedia; a bang leaves no history
+	a.ok(a.alice, "POST", "/api/v1/bangs", map[string]any{"trigger": "w", "name": "Wiktionary", "url": "https://en.wiktionary.org/w/index.php?search={q}"})
+	if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape("!w run"), nil); m["redirect"] != "https://en.wiktionary.org/w/index.php?search=run" {
+		t.Fatalf("own bang = %v", m["redirect"])
+	}
+	if hist, _, _ := a.st.ListHistory(context.Background(), a.ids["Alice"], store.HistoryFilter{}); len(hist) != 0 {
+		t.Fatalf("bangs left history %+v", hist)
+	}
+	// the browser's search address jumps at once
+	code, _, h := a.raw(a.bob, "GET", "/search?q="+url.QueryEscape("!gh pocket"), nil, "")
+	if code != 302 || h.Get("Location") != "https://github.com/search?q=pocket" {
+		t.Fatalf("/search → %d %q", code, h.Get("Location"))
+	}
+	// bad bangs are refused in plain words
+	for _, b := range []map[string]any{{"trigger": "has space", "url": "https://x.com/{q}"}, {"trigger": "ok", "url": "https://x.com/"}, {"trigger": "ok", "url": "javascript:alert({q})"}} {
+		if code, _, _ := a.call(a.alice, "POST", "/api/v1/bangs", b); code != 400 {
+			t.Fatalf("bang %v → %d", b, code)
+		}
+	}
+}
+
+func TestHistoryOffKeepsNothing(t *testing.T) {
+	a := newApp(t)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"history": false})
+	a.ok(a.alice, "GET", "/api/v1/search?q=private", nil)
+	if code, _, _ := a.call(a.alice, "POST", "/api/v1/history/open", map[string]any{"url": "https://example.org/a", "title": "A"}); code != 204 {
+		t.Fatalf("open → %d", code)
+	}
+	if m := a.ok(a.alice, "GET", "/api/v1/history", nil); m["total"].(float64) != 0 {
+		t.Fatalf("history while paused: %v", m)
+	}
+	if m := a.ok(a.alice, "GET", "/api/v1/suggest?q=pri", nil); len(m["history"].([]any)) != 0 || len(m["suggestions"].([]any)) != 2 {
+		t.Fatalf("suggest = %v", m)
+	}
+}
+
+func TestExportImportIsIdempotent(t *testing.T) {
+	a := newApp(t)
+	a.ok(a.alice, "POST", "/api/v1/rules", map[string]any{"domain": "example.com", "action": "boost", "note": "good"})
+	a.ok(a.alice, "POST", "/api/v1/rules", map[string]any{"domain": "spam.example", "action": "block"})
+	a.ok(a.alice, "POST", "/api/v1/bangs", map[string]any{"trigger": "ex", "url": "https://example.com/?s={q}"})
+	a.ok(a.alice, "GET", "/api/v1/search?q=one", nil)
+	_, doc, _ := a.raw(a.alice, "GET", "/api/v1/export.json", nil, "")
+	for i := 0; i < 2; i++ {
+		code, b, _ := a.raw(a.bob, "POST", "/api/v1/import?history=1", bytes.NewReader(doc), "application/json")
+		if code != 200 {
+			t.Fatalf("import %d → %d %s", i, code, b)
+		}
+	}
+	ctx := context.Background()
+	rules, _ := a.st.ListRules(ctx, a.ids["Bob"])
+	bangs, _ := a.st.ListBangs(ctx, a.ids["Bob"])
+	hist, _, _ := a.st.ListHistory(ctx, a.ids["Bob"], store.HistoryFilter{})
+	if len(rules) != 2 || len(bangs) != 1 || len(hist) != 1 {
+		t.Fatalf("after two imports bob has %d rules, %d bangs, %d history", len(rules), len(bangs), len(hist))
+	}
+	// a plain list of sites
+	code, b, _ := a.raw(a.bob, "POST", "/api/v1/import", strings.NewReader("# my list\npinterest.com\nmdn.io raise\nnot a domain\n"), "text/plain")
+	var out map[string]float64
+	_ = json.Unmarshal(b, &out)
+	if code != 200 || out["rules"] != 2 || out["skipped"] != 1 {
+		t.Fatalf("list import → %d %s", code, b)
+	}
+}
+
+func TestReadingViewProxiesPictures(t *testing.T) {
+	a := newApp(t)
+	para := strings.Repeat("This is a long enough paragraph about the subject to count as an article. ", 6)
+	a.eng.pages["/article"] = `<html><head><title>A story</title><meta property="og:site_name" content="Example News"></head><body>
+		<nav>menu</nav><article><h1>A story</h1><p>` + para + `</p><img src="/pic.png" alt="pic"><script>alert(1)</script>
+		<iframe src="https://www.youtube.com/embed/abc"></iframe><p>` + para + `</p></article></body></html>`
+	m := a.ok(a.alice, "GET", "/api/v1/read?url="+url.QueryEscape(a.eng.srv.URL+"/article"), nil)
+	content := m["content"].(string)
+	if !strings.Contains(content, `src="/api/v1/img?u=`+url.QueryEscape(a.eng.srv.URL+"/pic.png")) {
+		t.Fatalf("picture not proxied: %s", content)
+	}
+	if strings.Contains(content, "<script") || strings.Contains(content, "iframe") || m["embeds"].(float64) != 1 {
+		t.Fatalf("unsafe content or embed count: %v %s", m["embeds"], content)
+	}
+	a.eng.pages["/pic.png"] = "\x89PNG\r\n\x1a\n0000"
+	code, _, h := a.raw(a.alice, "GET", "/api/v1/img?u="+url.QueryEscape(a.eng.srv.URL+"/pic.png"), nil, "")
+	if code != 200 || h.Get("Content-Type") != "image/png" || !strings.Contains(h.Get("Content-Security-Policy"), "sandbox") {
+		t.Fatalf("img → %d %v", code, h)
+	}
+	// the picture proxy does not fetch pages
+	if code, _, _ := a.raw(a.alice, "GET", "/api/v1/img?u="+url.QueryEscape(a.eng.srv.URL+"/article"), nil, ""); code != 502 {
+		t.Fatalf("img of a page → %d", code)
+	}
+	if code, _, _ := a.call(a.alice, "GET", "/api/v1/read?url=file:///etc/passwd", nil); code != 400 {
+		t.Fatalf("file url → %d", code)
+	}
+}
+
+func TestPrivateAddressesRefusedByDefault(t *testing.T) {
+	a := newApp(t)
+	a.s.fetch = nil
+	cfg := *a.s.cfg
+	cfg.FetchPrivate = false
+	a.s.cfg = &cfg
+	a.s.fetch = newFetcherForTest(false)
+	if code, m, _ := a.call(a.alice, "GET", "/api/v1/read?url="+url.QueryEscape(a.eng.srv.URL+"/x"), nil); code != 502 || !strings.Contains(m["error"].(string), "private network") {
+		t.Fatalf("private read → %d %v", code, m)
+	}
+}
+
+func TestLinkScopes(t *testing.T) {
+	req := func(method, path string) *http.Request { r, _ := http.NewRequest(method, path, nil); return r }
+	read := []string{"search:read"}
+	for _, c := range []struct {
+		method, path string
+		want         bool
+	}{
+		{"GET", "/api/v1/search", true}, {"GET", "/api/v1/read", true}, {"GET", "/api/v1/suggest", true}, {"GET", "/api/v1/auth/me", true},
+		{"GET", "/api/v1/history", false}, {"POST", "/api/v1/rules", false}, {"GET", "/api/v1/settings", false},
+		{"POST", "/api/v1/send/reader", false}, {"GET", "/api/v1/export.json", false}, {"POST", "/api/v1/search", false},
+	} {
+		if got := linkAllows(read, req(c.method, c.path)); got != c.want {
+			t.Errorf("search:read %s %s = %v, want %v", c.method, c.path, got, c.want)
+		}
+	}
+	if linkAllows(nil, req("GET", "/api/v1/search")) {
+		t.Error("no scopes may search")
+	}
+}
+
+func TestEnginePickAndAppsTable(t *testing.T) {
+	all := []engine.Info{{Name: "a", Categories: []string{"general"}, Enabled: true}, {Name: "b", Categories: []string{"general", "images"}, Enabled: true}, {Name: "c", Categories: []string{"general"}}}
+	if got := engine.Pick(all, "general", nil, nil); got != nil {
+		t.Fatalf("no changes → %v", got)
+	}
+	if got := engine.Pick(all, "general", []string{"a"}, []string{"c"}); strings.Join(got, ",") != "b,c" {
+		t.Fatalf("pick = %v", got)
+	}
+	if got := engine.Pick(all, "images", []string{"a"}, nil); got != nil {
+		t.Fatalf("a change elsewhere → %v", got)
+	}
+	seen := map[string]bool{}
+	bangs := map[string]bool{}
+	for _, b := range builtinBangs {
+		bangs[b.Trigger] = true
+	}
+	for _, a := range pocketApps {
+		if seen[a.slug] {
+			t.Fatalf("app %s twice", a.slug)
+		}
+		seen[a.slug] = true
+		if a.search == nil && a.send == nil {
+			t.Fatalf("app %s does nothing", a.slug)
+		}
+		if a.search != nil && (bangs[a.bang] || a.bang == "") {
+			t.Fatalf("app %s bang %q missing or clashes with a built-in one", a.slug, a.bang)
+		}
+		bangs[a.bang] = true
+		for _, sc := range a.scopes() {
+			if sc == "" {
+				t.Fatalf("app %s has an empty scope", a.slug)
+			}
+		}
+	}
+}
+
+var _ = config.Config{}
+
+func newFetcherForTest(private bool) *read.Fetcher { return read.NewFetcher("test", private) }
+
+// A direct connection to a fake Pocket Notes / Reader: searched beside the
+// web with the person's own token, and a result sent to Reader.
+func TestYourAppsDirect(t *testing.T) {
+	a := newApp(t)
+	var gotAuth, gotBody string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		switch r.URL.Path {
+		case "/api/v1/search":
+			_, _ = io.WriteString(w, `[{"id":3,"title":"Sourdough notes","snippet":"**feed** it twice","updated_at":"2026-10-30T10:00:00Z"},{"id":4,"title":"","snippet":"untitled"}]`)
+		case "/api/v1/saved":
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+			w.WriteHeader(201)
+			_, _ = io.WriteString(w, `{"article":{"id":7},"created":true}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"notes":  map[string]any{"mode": "direct", "url": sib.URL, "token": "pnt_secret", "public": "https://notes.example"},
+		"reader": map[string]any{"mode": "direct", "url": sib.URL, "token": "prd_secret"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=sourdough&app=notes", nil)
+	secs := m["sections"].([]any)
+	items := secs[0].(map[string]any)["items"].([]any)
+	if len(secs) != 1 || len(items) != 1 || gotAuth != "Bearer pnt_secret" {
+		t.Fatalf("sections = %v (auth %q)", secs, gotAuth)
+	}
+	it := items[0].(map[string]any)
+	if it["url"] != "https://notes.example/note/3" || it["snippet"] != "feed it twice" || it["kind"] != "note" {
+		t.Fatalf("item = %v", it)
+	}
+	// Bob has no connection: a quiet "not set up", never Alice's notes
+	m = a.ok(a.bob, "GET", "/api/v1/search/apps?q=sourdough&app=notes", nil)
+	if s := m["sections"].([]any)[0].(map[string]any); s["off"] != true || len(s["items"].([]any)) != 0 {
+		t.Fatalf("bob's notes = %v", s)
+	}
+	// the token never comes back
+	if st := a.ok(a.alice, "GET", "/api/v1/settings", nil); strings.Contains(fmt.Sprint(st["apps"]), "pnt_secret") {
+		t.Fatalf("token leaked: %v", st["apps"])
+	}
+	res := a.ok(a.alice, "POST", "/api/v1/send/reader", map[string]any{"url": "https://example.org/a", "title": "Example A", "query": "x"})
+	if res["item_url"] != sib.URL+"/a/7" || !strings.Contains(gotBody, `"url":"https://example.org/a"`) {
+		t.Fatalf("send = %v body %s", res, gotBody)
+	}
+	// the result page shows where it went
+	for _, r := range a.ok(a.alice, "GET", "/api/v1/search?q=x", nil)["results"].([]any) {
+		h := r.(map[string]any)
+		if h["url"] == "https://example.org/a" && len(h["saved"].([]any)) != 1 {
+			t.Fatalf("saved badge missing: %v", h)
+		}
+	}
+	if code, _, _ := a.call(a.bob, "POST", "/api/v1/send/reader", map[string]any{"url": "https://example.org/a"}); code != 409 {
+		t.Fatalf("bob send without connection → %d", code)
+	}
+	if got := itemURL("https://b.example/", "/b/{board_id}/c/{id}", map[string]any{"id": 5.0, "board_id": 2.0}, []string{"id"}); got != "https://b.example/b/2/c/5" {
+		t.Fatalf("route = %s", got)
+	}
+}

@@ -1,0 +1,6 @@
+# Pocket Search behind Caddy. /s/<token> (shared lists) and /api/v1/s/*
+# work without a login; /api/* is reachable for phone shortcuts and the
+# Homepage widget — they send their own bearer token.
+search.example.com {
+	reverse_proxy pocket-search:8080
+}
