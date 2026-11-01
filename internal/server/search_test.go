@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/abjelosevic88/pocket-homelab-search/internal/config"
 	"github.com/abjelosevic88/pocket-homelab-search/internal/engine"
@@ -37,6 +38,7 @@ type fakeEngine struct {
 	asked []url.Values
 	srv   *httptest.Server
 	pages map[string]string // other paths: a tiny web site for the reading view
+	delay time.Duration     // how long /search takes
 }
 
 func (f *fakeEngine) last() url.Values {
@@ -60,7 +62,9 @@ func newApp(t *testing.T) *app {
 		case "/search":
 			f.mu.Lock()
 			f.asked = append(f.asked, r.URL.Query())
+			d := f.delay
 			f.mu.Unlock()
+			time.Sleep(d)
 			if r.URL.Query().Get("format") != "json" {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
@@ -539,5 +543,28 @@ func TestAddressBarSuggestionsWithoutLogin(t *testing.T) {
 	code, b, _ = a.raw(a.alice, "GET", "/api/v1/suggest?format=opensearch&q=gol", nil, "")
 	if code != 200 || !strings.Contains(string(b), "golang secret") {
 		t.Fatalf("signed-in opensearch → %d %s", code, b)
+	}
+}
+
+// A tab hovered (its search starts) and then clicked: one search reaches the engine.
+func TestSameSearchAtOnceAsksTheEngineOnce(t *testing.T) {
+	a := newApp(t)
+	a.eng.delay = 300 * time.Millisecond
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if code, _, _ := a.call(a.alice, "GET", "/api/v1/search?q=volcano&cat=videos&nohistory=1", nil); code != 200 {
+				t.Errorf("search → %d", code)
+			}
+		}()
+	}
+	wg.Wait()
+	a.eng.mu.Lock()
+	n := len(a.eng.asked)
+	a.eng.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("engine asked %d times, want 1", n)
 	}
 }

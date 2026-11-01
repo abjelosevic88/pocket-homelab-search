@@ -35,12 +35,13 @@ type Server struct {
 	engine   engine.Searcher
 	fetch    *read.Fetcher
 
-	engMu   sync.Mutex
-	engInfo []engine.Info // SearXNG's engines, kept ten minutes
-	engAt   time.Time
-	resMu   sync.Mutex
-	results map[string]cachedSearch // recent result pages per person
-	modesMu sync.Mutex
+	engMu    sync.Mutex
+	engInfo  []engine.Info // SearXNG's engines, kept ten minutes
+	engAt    time.Time
+	resMu    sync.Mutex
+	results  map[string]cachedSearch  // recent result pages per person
+	inflight map[string]chan struct{} // searches on their way, so a second ask waits for the first
+	modesMu  sync.Mutex
 
 	oidcMu sync.Mutex
 	oidc   *oidcProvider // for the issuer in use; rebuilt when it changes
@@ -60,7 +61,7 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger, webFS fs.FS) *Se
 	return &Server{cfg: cfg, store: st, log: log, webFS: webFS, started: time.Now(), oidc: &oidcProvider{},
 		engine: eng, fetch: read.NewFetcher(cfg.UserAgent, cfg.FetchPrivate),
 		core:    core.New(cfg.CoreURL, core.Options{DB: st.DB, TokenFile: cfg.DataDir + "/core.token", UserAgent: cfg.UserAgent}),
-		results: map[string]cachedSearch{}}
+		results: map[string]cachedSearch{}, inflight: map[string]chan struct{}{}}
 }
 
 // Bootstrap seeds the first admin (if configured), the owner's integration

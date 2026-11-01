@@ -55,6 +55,17 @@ export default function Results() {
   const defaultCat = (settings?.default_category || 'general') as Category
   const cat = ((params.get('cat') || defaultCat) as Category)
   const tabValue = (id: Category) => id === defaultCat ? '' : id
+  // a tab about to be clicked starts its search now: the server keeps the answer a few minutes
+  // and a click while it is on its way waits for the same search, so switching is near-instant
+  const warmed = useRef(new Set<string>())
+  const warm = (id: Category) => {
+    if (!q || id === cat || id === 'apps') return
+    const t = time ? `&time=${time}` : ''
+    const key = `${q}\u0000${id}\u0000${t}`
+    if (warmed.current.has(key)) return
+    warmed.current.add(key)
+    fetch(`${V1}/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(id)}${t}&nohistory=1`, { credentials: 'same-origin' }).catch(() => {})
+  }
   const time = (params.get('time') || '') as TimeRange
   const onlyApp = params.get('app') || ''
   const aiParam = params.get('ai') === '1'
@@ -235,7 +246,7 @@ export default function Results() {
           <nav className="srp-tablist" role="tablist" aria-label="What to search">
             {TABS.map((t, i) => (
               <button key={t.id} type="button" role="tab" aria-selected={cat === t.id} className={`srp-tab ${cat === t.id ? 'active' : ''}`} title={`${t.label} (${i + 1})`}
-                onClick={() => setParam('cat', tabValue(t.id))}>
+                onClick={() => setParam('cat', tabValue(t.id))} onMouseEnter={() => warm(t.id)} onFocus={() => warm(t.id)} onTouchStart={() => warm(t.id)}>
                 <Icon name={t.icon} size={15} />{t.label}
               </button>
             ))}

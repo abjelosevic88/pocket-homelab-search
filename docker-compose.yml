@@ -76,7 +76,12 @@ configs:
         default_lang: "auto"
         formats: [html, json]
       outgoing:
-        request_timeout: 5.0
-        max_request_timeout: 15.0
+        # a page waits for its slowest engine: none may hold it longer than this
+        request_timeout: 3.0
+        max_request_timeout: 10.0
         pool_connections: 100
         pool_maxsize: 20
+      engines:
+        # answers in 3-5 s and holds every video search up; people can switch it on in Settings → Engines
+        - name: vimeo
+          disabled: true

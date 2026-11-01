@@ -196,6 +196,26 @@ func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q
 	if !s.engine.Configured() {
 		return nil, engine.ErrNotConfigured
 	}
+	// the same search already on its way (a tab hovered, then clicked): wait for that one
+	s.resMu.Lock()
+	if wait, ok := s.inflight[key]; ok {
+		s.resMu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return s.search(ctx, u, st, q, cat, tr, lang, page)
+	}
+	done := make(chan struct{})
+	s.inflight[key] = done
+	s.resMu.Unlock()
+	defer func() {
+		s.resMu.Lock()
+		delete(s.inflight, key)
+		s.resMu.Unlock()
+		close(done)
+	}()
 	if lang == "" {
 		lang = st.Language
 	}
