@@ -1,6 +1,6 @@
 // The app shell: sidebar, top bar, command palette, shortcuts — the Pocket Calendar layout.
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
 import type { Dashboard } from '../lib/types'
@@ -58,6 +58,13 @@ export default function Layout() {
   useEffect(() => { setSidebarOpen(!drawer && localStorage.getItem(SIDEBAR_KEY) !== '0') }, [drawer])
   const drawerOpenedAt = useRef(0)
   const toggleSidebar = () => setSidebarOpen(o => { drawerOpenedAt.current = performance.now(); const n = !o; if (!drawer) localStorage.setItem(SIDEBAR_KEY, n ? '1' : '0'); return n })
+  // Results and the reading view open without the sidebar (like a search engine's page); the
+  // menu button shows it for this visit only, the saved choice is for the other pages.
+  const focusPage = loc.pathname === '/search' || loc.pathname === '/read'
+  const [focusOpen, setFocusOpen] = useState(false)
+  useEffect(() => { if (focusPage) setFocusOpen(false) }, [focusPage])
+  const open = !drawer && focusPage ? focusOpen : sidebarOpen
+  const toggle = () => { if (!drawer && focusPage) setFocusOpen(o => !o); else toggleSidebar() }
   const closeDrawer = () => { if (drawer) setSidebarOpen(false) }
   useEffect(() => { document.querySelector('.content')?.scrollTo({ top: 0 }) }, [loc.pathname])
 
@@ -95,7 +102,7 @@ export default function Layout() {
         case 's': go('/sites'); break
         case 'b': go('/bangs'); break
         case ',': go('/settings'); break
-        case '[': e.preventDefault(); toggleSidebar(); break
+        case '[': e.preventDefault(); toggle(); break
       }
     }
     window.addEventListener('keydown', h)
@@ -119,13 +126,13 @@ export default function Layout() {
   return (
     <CrumbCtx.Provider value={setCrumb}>
       <ShellCtx.Provider value={{ dash, reload: load }}>
-        <div className={`app ${sidebarOpen ? 'with-sidebar' : 'no-sidebar'} ${mobile ? 'is-mobile' : ''} ${drawer ? 'drawer-mode' : ''}`}>
+        <div className={`app ${open ? 'with-sidebar' : 'no-sidebar'} ${mobile ? 'is-mobile' : ''} ${drawer ? 'drawer-mode' : ''} ${loc.pathname === '/search' ? 'is-results' : ''}`}>
           {drawer && sidebarOpen && <div className="drawer-backdrop" onClick={e => { if (e.timeStamp - drawerOpenedAt.current > 400) setSidebarOpen(false) }} />}
-          <div className={`sidebar-wrap ${sidebarOpen ? 'open' : ''}`}>
+          <div className={`sidebar-wrap ${open ? 'open' : ''}`}>
             <Sidebar onNavigate={closeDrawer} dash={dash} />
           </div>
           <div className="main">
-            <TopBar onMenu={toggleSidebar} onPalette={() => setPalette(true)} mobile={mobile} compact={narrow} sidebarOpen={sidebarOpen} crumb={crumb} />
+            <TopBar onMenu={toggle} onPalette={() => setPalette(true)} mobile={mobile} compact={narrow} sidebarOpen={open} crumb={crumb} results={loc.pathname === '/search'} />
             <main className="content"><div className="content-inner"><Outlet /></div></main>
           </div>
           {mobile && loc.pathname !== '/' && loc.pathname !== '/read' && <button type="button" className="fab" aria-label="New" title="New" aria-haspopup="menu" aria-expanded={!!fabMenu} onClick={e => setFabMenu(fabMenu ? null : rectOf(e.currentTarget))}><Icon name="plus" size={26} strokeWidth={2.2} /></button>}
@@ -140,7 +147,7 @@ export default function Layout() {
 
 const SECTION: Record<string, [string, string]> = { '': ['Search', '/'], search: ['Search', '/'], read: ['Reading view', '/'], history: ['History', '/history'], sites: ['Sites', '/sites'], bangs: ['Bangs', '/bangs'] }
 
-function TopBar({ onMenu, onPalette, mobile, compact, sidebarOpen, crumb }: { onMenu: () => void; onPalette: () => void; mobile: boolean; compact: boolean; sidebarOpen: boolean; crumb: string }) {
+function TopBar({ onMenu, onPalette, mobile, compact, sidebarOpen, crumb, results }: { onMenu: () => void; onPalette: () => void; mobile: boolean; compact: boolean; sidebarOpen: boolean; crumb: string; results: boolean }) {
   const { user, themeMode, setThemeMode, status, setUser } = useApp()
   const navigate = useNavigate()
   const loc = useLocation()
@@ -161,10 +168,16 @@ function TopBar({ onMenu, onPalette, mobile, compact, sidebarOpen, crumb }: { on
   return (
     <header className="topbar">
       <button type="button" className="btn ghost icon-only" onClick={onMenu} aria-label={sidebarOpen ? 'Hide the sidebar' : 'Show the sidebar'} title="Menu ([)"><Icon name={mobile || compact ? 'menu' : 'sidebar'} size={18} /></button>
-      <h1 className="range-title">
-        {crumb ? <><button type="button" className="crumb" onClick={() => navigate(sectionTo)}>{section}</button><Icon name="chevron-right" size={16} className="crumb-sep" /><span className="ellipsis">{crumb}</span></> : section}
-      </h1>
-      <span className="spacer" />
+      {results ? <>
+        {/* results: the logo home and the search box (Results puts it in the slot), like a search engine */}
+        {!mobile && !sidebarOpen && <Link to="/" className="tb-brand" title="Pocket Search home"><img src="/favicon.svg" alt="" /><span>Pocket <b>Search</b></span></Link>}
+        <div id="psr-topbar-slot" className="topbar-slot" />
+      </> : <>
+        <h1 className="range-title">
+          {crumb ? <><button type="button" className="crumb" onClick={() => navigate(sectionTo)}>{section}</button><Icon name="chevron-right" size={16} className="crumb-sep" /><span className="ellipsis">{crumb}</span></> : section}
+        </h1>
+        <span className="spacer" />
+      </>}
       <button type="button" className="btn ghost icon-only" onClick={onPalette} aria-label="Commands" title="Commands (⌘K)"><Icon name="command" size={18} /></button>
       <AskButton />
       <MenuButton label="Account" className="avatar-btn" align="right" width={220} items={avatarMenu}>

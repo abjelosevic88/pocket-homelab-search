@@ -1,6 +1,7 @@
 // The results page: web results (your site rules applied), pictures, videos,
 // news, your Pocket apps, an AI answer with sources and the infobox.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Icon } from '../components/icons'
 import { useCrumb, announceChange } from '../components/Layout'
@@ -42,6 +43,9 @@ const RULES: { action: RuleAction; label: (d: string) => string; icon: string; d
 type Failure = { status: number; message: string }
 
 export default function Results() {
+  // the search box lives in the top bar on this page (Layout's slot), like a search engine
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
+  useEffect(() => { setSlot(document.getElementById('psr-topbar-slot')) }, [])
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
   const { settings } = useApp()
@@ -226,7 +230,7 @@ export default function Results() {
   return (
     <div className="srp">
       <div className="srp-bar">
-        <SearchBox initial={q} cat={tabValue(cat)} size="md" />
+        {slot ? createPortal(<SearchBox initial={q} cat={tabValue(cat)} size="md" />, slot) : <SearchBox initial={q} cat={tabValue(cat)} size="md" />}
         <div className="srp-tabs">
           <nav className="srp-tablist" role="tablist" aria-label="What to search">
             {TABS.map((t, i) => (
