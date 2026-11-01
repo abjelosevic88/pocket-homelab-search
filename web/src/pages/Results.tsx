@@ -218,8 +218,8 @@ export default function Results() {
   const side = showSide && !!q && (
     <aside className="srp-side">
       {(aiMode !== 'off' || aiParam) && !engineMissing && <AnswerCard q={q} cat={cat} time={time} mode={aiMode} auto={aiParam} />}
-      {box && <InfoboxCard box={box} />}
       {cat === 'general' && (wantApps || engineMissing) && <AppsPanel sections={apps} loading={appsLoading} q={q} />}
+      {box && <InfoboxCard box={box} />}
     </aside>
   )
 

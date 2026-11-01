@@ -61,6 +61,8 @@
 .srp-body.with-side.is-wide { grid-template-columns: minmax(0, 680px) minmax(280px, 380px); justify-content: space-between; }
 .srp-main { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
 .srp-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+/* the side column scrolls as a whole; its cards keep their height instead of being squeezed */
+.srp-side > * { flex-shrink: 0; }
 /* narrow: the AI answer and your apps above the results, the infobox after them */
 .srp-body.with-side:not(.is-wide) { display: flex; flex-direction: column; gap: 14px; }
 .srp-body.with-side:not(.is-wide) .srp-side { display: contents; }
