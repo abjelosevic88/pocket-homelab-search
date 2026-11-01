@@ -2,6 +2,7 @@ import { AskButton } from '../components/AskButton'
 import React, { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, postFile, V1 } from '../lib/api'
+import { LANGUAGES } from '../lib/languages'
 import { useApp } from '../lib/app-context'
 import type { AIStatus, APIToken, AppConnSetting, Category, EngineRow, Engines, PocketAppConn, Settings as SettingsT, User } from '../lib/types'
 import { DATE_FORMATS, TIME_FORMATS, fmtBytes, fmtDateTime, type DateFormat, type TimeFormat } from '../lib/format'
@@ -23,7 +24,7 @@ const TABS: { id: TabId; label: string; icon: string; sub: string }[] = [
   { id: 'profile', label: 'Profile', icon: 'user', sub: 'Your name, email and password.' },
   { id: 'people', label: 'People', icon: 'users', sub: 'Everyone who has an account on this box.' },
   { id: 'tokens', label: 'API & shortcuts', icon: 'key', sub: 'Personal tokens for scripts, Homepage widgets, Siri Shortcuts and Raycast.' },
-  { id: 'data', label: 'Backup & data', icon: 'database', sub: 'Export your history, site rules and bangs, import them or a list of sites, download the database.' },
+  { id: 'data', label: 'Backup & data', icon: 'database', sub: 'Export your history, site rules, bangs and lenses, import them or a list of sites, download the database.' },
   { id: 'about', label: 'About', icon: 'info', sub: 'Version, numbers and the server.' },
 ]
 // the old ?tab= names
@@ -129,11 +130,6 @@ function useTester() {
   return { run, status }
 }
 
-const LANGUAGES: [string, string][] = [
-  ['auto', 'Automatic'], ['en', 'English'], ['de', 'German'], ['fr', 'French'], ['es', 'Spanish'], ['it', 'Italian'], ['nl', 'Dutch'], ['pt', 'Portuguese'],
-  ['pl', 'Polish'], ['sr', 'Serbian'], ['hr', 'Croatian'], ['bs', 'Bosnian'], ['sl', 'Slovenian'], ['ru', 'Russian'], ['uk', 'Ukrainian'], ['tr', 'Turkish'],
-  ['sv', 'Swedish'], ['cs', 'Czech'], ['hu', 'Hungarian'], ['ja', 'Japanese'], ['zh', 'Chinese'],
-]
 const CATEGORY_OPTIONS: { value: Category; label: string }[] = [
   { value: 'general', label: 'All' }, { value: 'images', label: 'Pictures' }, { value: 'videos', label: 'Videos' }, { value: 'news', label: 'News' }, { value: 'apps', label: 'Your apps' },
 ]
@@ -578,14 +574,14 @@ function Data() {
         <textarea rows={6} value={sites} onChange={e => setSites(e.target.value)} placeholder={'pinterest.com\nmedium.com lower\nwikipedia.org pin\ndeveloper.mozilla.org raise'} />
         <div className="row wrap mt-sm"><button type="button" className="btn primary" disabled={busy || !sites.trim()} onClick={() => send(sites)}><Icon name="upload" size={15} />{busy ? 'Importing…' : 'Add these rules'}</button></div>
       </Section>
-      <Section title="Import an export" icon="archive" sub="A Pocket Search export (from here or another box): site rules and bangs are merged, and importing twice changes nothing.">
+      <Section title="Import an export" icon="archive" sub="A Pocket Search export (from here or another box): site rules, bangs and lenses are merged, and importing twice changes nothing.">
         <label className="check-row"><input type="checkbox" checked={withHistory} onChange={e => setWithHistory(e.target.checked)} />Include the search history</label>
         <div className="row wrap mt-sm"><label className="btn"><Icon name="upload" size={15} />{busy ? 'Importing…' : 'Choose a file…'}<input type="file" accept=".json,application/json" hidden onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) send(file) }} /></label></div>
       </Section>
       {res && <div className={`callout ${res.rules + res.bangs + res.history ? 'info' : ''}`}><Icon name="check-circle" size={15} /><div>
         <b>{res.rules}</b> site rule{res.rules === 1 ? '' : 's'}, <b>{res.bangs}</b> bang{res.bangs === 1 ? '' : 's'}{withHistory ? <>, <b>{res.history}</b> history entr{res.history === 1 ? 'y' : 'ies'}</> : ''} imported{res.skipped ? `, ${res.skipped} skipped` : ''}.
       </div></div>}
-      <Section title="Export" icon="download" sub="Your history, site rules, bangs and the results you sent to other apps, as one JSON file.">
+      <Section title="Export" icon="download" sub="Your history, site rules, bangs, lenses and the results you sent to other apps, as one JSON file.">
         <a className="btn" href={`${V1}/export.json`}><Icon name="download" size={15} />Export my data</a>
       </Section>
       {user?.role === 'admin' && <Section title="Database backup" icon="database" sub="The whole box, every account — admins only.">

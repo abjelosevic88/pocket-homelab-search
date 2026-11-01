@@ -297,6 +297,7 @@ type appItem struct {
 	URL     string `json:"url"`            // the item in the app
 	Link    string `json:"link,omitempty"` // an outside address it carries
 	Kind    string `json:"kind"`
+	Strong  bool   `json:"strong,omitempty"` // its title holds every word searched: shown among the web results
 }
 
 // appSection is one app's matches.
@@ -372,6 +373,7 @@ func (s *Server) searchApp(ctx context.Context, u *store.User, st store.Settings
 			continue
 		}
 		it.Snippet = oneLine(stripMarkup(it.Snippet), 220)
+		it.Strong = strongMatch(it.Title, q)
 		it.URL = itemURL(sib.public, a.search.route, row, a.search.id)
 		sec.Items = append(sec.Items, it)
 		if len(sec.Items) >= limit {
@@ -380,6 +382,22 @@ func (s *Server) searchApp(ctx context.Context, u *store.User, st store.Settings
 	}
 	sec.More = itemURL(sib.public, "", nil, nil)
 	return sec
+}
+
+// strongMatch: the title holds every word of the search (at least three
+// letters searched), like a note named exactly what you looked for.
+func strongMatch(title, q string) bool {
+	words := strings.Fields(strings.ToLower(q))
+	if len(strings.Join(words, "")) < 3 {
+		return false
+	}
+	t := strings.ToLower(title)
+	for _, w := range words {
+		if !strings.Contains(t, w) {
+			return false
+		}
+	}
+	return true
 }
 
 var markup = strings.NewReplacer("**", "", "__", "", "##", "", "# ", "", "`", "", "<mark>", "", "</mark>", "", "<b>", "", "</b>", "")

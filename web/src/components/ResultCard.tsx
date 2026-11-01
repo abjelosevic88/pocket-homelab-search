@@ -3,9 +3,9 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fmtDate } from '../lib/format'
-import { faviconURL, imgURL, type Hit, type PocketAppConn } from '../lib/types'
+import { faviconURL, imgURL, type AppItem, type Hit, type PocketAppConn } from '../lib/types'
 import { Icon } from './icons'
-import { savedLabel } from './send'
+import { appIcon, savedLabel } from './send'
 import { type MenuItem, MenuButton } from './ui'
 
 const RULE_LABEL: Record<string, string> = { pin: 'Always first', boost: 'Raised', lower: 'Lowered' }
@@ -41,15 +41,17 @@ export interface CardProps {
   menu: () => MenuItem[]
   onOpen: (h: Hit) => void
   thumb?: boolean // news: a small picture at the right
+  onPreview?: (h: Hit) => void
+  previewing?: boolean
 }
 
-export function ResultCard({ hit, active, newTab, apps, menu, onOpen, thumb }: CardProps) {
+export function ResultCard({ hit, active, newTab, apps, menu, onOpen, thumb, onPreview, previewing }: CardProps) {
   const target = newTab ? '_blank' : undefined
   const path = crumbs(hit.url)
   const w = when(hit)
   const pic = thumb ? imgURL(hit.thumbnail || hit.image) : ''
   return (
-    <article className={`res ${active ? 'is-active' : ''} ${pic ? 'has-thumb' : ''}`} data-url={hit.url}>
+    <article className={`res ${active || previewing ? 'is-active' : ''} ${pic ? 'has-thumb' : ''}`} data-url={hit.url}>
       <div className="res-main">
         <div className="res-site">
           <SiteIcon domain={hit.domain} />
@@ -70,6 +72,7 @@ export function ResultCard({ hit, active, newTab, apps, menu, onOpen, thumb }: C
       </div>
       {pic && <a className="res-thumb" href={hit.url} target={target} rel="noreferrer noopener" onClick={() => onOpen(hit)} tabIndex={-1}><img src={pic} alt="" loading="lazy" /></a>}
       <div className="res-actions">
+        {onPreview && <button type="button" className={`btn ghost icon-only sm ${previewing ? 'on' : ''}`} title="Preview (p)" aria-label="Preview" aria-pressed={!!previewing} onClick={() => onPreview(hit)}><Icon name="eye" size={15} /></button>}
         <Link className="btn ghost icon-only sm" to={`/read?url=${encodeURIComponent(hit.url)}`} title="Open in the reading view" aria-label="Open in the reading view"><Icon name="book-open" size={15} /></Link>
         <MenuButton label="More" className="btn ghost icon-only sm" align="right" width={250} items={menu}><Icon name="more" size={15} /></MenuButton>
       </div>
@@ -96,6 +99,26 @@ export function VideoCard({ hit, active, newTab, menu, onOpen }: CardProps) {
       </div>
       <div className="res-actions">
         <MenuButton label="More" className="btn ghost icon-only sm" align="right" width={250} items={menu}><Icon name="more" size={15} /></MenuButton>
+      </div>
+    </article>
+  )
+}
+
+/** A strong match from one of your Pocket apps, shown among the web results. */
+export function AppHitCard({ item, app, appName }: { item: AppItem; app: string; appName: string }) {
+  const href = item.url === '#' ? undefined : item.url
+  const d = item.date && /^\d{4}-\d{2}-\d{2}/.test(item.date) ? fmtDate(item.date.slice(0, 10)) : ''
+  const meta = [item.kind, d].filter(Boolean).join(' · ')
+  return (
+    <article className="res res-app" data-app={app}>
+      <div className="res-main">
+        <div className="res-site">
+          <span className="res-app-ico"><Icon name={appIcon(app)} size={13} /></span>
+          <span className="res-app-badge">{appName}</span>
+          {meta && <span className="res-path">{meta}</span>}
+        </div>
+        <h3 className="res-title"><a href={href} onClick={e => { if (!href) e.preventDefault() }}>{item.title}</a></h3>
+        {item.snippet && <p className="res-snippet">{item.snippet}</p>}
       </div>
     </article>
   )

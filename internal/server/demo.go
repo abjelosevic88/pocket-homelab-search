@@ -195,6 +195,9 @@ func demoSections(q, only string, limit int) []appSection {
 			s.Items = s.Items[:limit]
 		}
 		s.More, s.MS = "#", int64(40+len(s.App)*9)
+		for i := range s.Items {
+			s.Items[i].Strong = strongMatch(s.Items[i].Title, q)
+		}
 		out = append(out, s)
 	}
 	return out

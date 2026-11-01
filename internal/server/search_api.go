@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/abjelosevic88/pocket-homelab-search/internal/engine"
+	"github.com/abjelosevic88/pocket-homelab-search/internal/instant"
 	"github.com/abjelosevic88/pocket-homelab-search/internal/store"
 )
 
@@ -55,6 +56,7 @@ type searchOut struct {
 	Engine       string                `json:"engine"`
 	MS           int64                 `json:"ms"`
 	Redirect     string                `json:"redirect,omitempty"` // a bang: go here instead
+	Instant      *instant.Answer       `json:"instant,omitempty"`  // worked out on the server: a sum, the weather…
 }
 
 // domainOf is a result's site without "www.".
@@ -185,8 +187,12 @@ func (s *Server) remember(key string, out *searchOut) {
 }
 
 // search runs one search for a person with their settings and rules.
-func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q, cat, tr, lang string, page int) (*searchOut, error) {
-	key := searchKey(u.ID, q, cat, tr+"\x00"+lang, page)
+func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q, cat, tr, lang string, page int, lens *store.Lens) (*searchOut, error) {
+	lensKey := ""
+	if lens != nil {
+		lensKey = fmt.Sprintf("%d@%s", lens.ID, lens.UpdatedAt)
+	}
+	key := searchKey(u.ID, q, cat, tr+"\x00"+lang+"\x00"+lensKey, page)
 	if c := s.cached(key); c != nil {
 		cp := *c
 		cp.Results = append([]hit(nil), c.Results...)
@@ -205,7 +211,7 @@ func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		return s.search(ctx, u, st, q, cat, tr, lang, page)
+		return s.search(ctx, u, st, q, cat, tr, lang, page, lens)
 	}
 	done := make(chan struct{})
 	s.inflight[key] = done
@@ -216,10 +222,13 @@ func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q
 		s.resMu.Unlock()
 		close(done)
 	}()
+	if lang == "" && lens != nil && lens.Language != "" {
+		lang = lens.Language
+	}
 	if lang == "" {
 		lang = st.Language
 	}
-	query := engine.Query{Q: q, Category: cat, Page: page, TimeRange: tr, Language: lang, SafeSearch: st.SafeSearch}
+	query := engine.Query{Q: lensQuery(q, lens), Category: cat, Page: page, TimeRange: tr, Language: lang, SafeSearch: st.SafeSearch}
 	if len(st.EnginesOff)+len(st.EnginesOn) > 0 {
 		if all, err := s.engineList(ctx); err == nil {
 			if picked := engine.Pick(all, cat, st.EnginesOff, st.EnginesOn); picked != nil {
@@ -239,7 +248,8 @@ func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q
 		return nil, err
 	}
 	rules, _ := s.store.ListRules(ctx, u.ID)
-	hits, hidden, hiddenSites, ruleHits := applyRules(res.Results, rules)
+	hits, hidden, hiddenSites, ruleHits := applyRules(res.Results, lensRules(rules, lens))
+	hits = onlySites(hits, lens)
 	if len(ruleHits) > 0 {
 		s.store.CountRuleHits(ctx, u.ID, ruleHits)
 	}
@@ -317,7 +327,29 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page := max(1, min(queryInt(r, "page"), 20))
-	out, err := s.search(ctx, u, st, q, cat, tr, r.URL.Query().Get("lang"), page)
+	var lens *store.Lens
+	if id := int64(queryInt(r, "lens")); id > 0 {
+		l, err := s.store.GetLens(ctx, u.ID, id)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "that lens is gone")
+			return
+		}
+		lens = l
+	}
+	// instant answers (a sum, a conversion, the weather…) are worked out
+	// while the engines search
+	var inst *instant.Answer
+	instDone := make(chan struct{})
+	go func() {
+		defer close(instDone)
+		if page == 1 && cat == "general" && lens == nil {
+			ictx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
+			inst = s.instantAnswer(ictx, u, st, q)
+		}
+	}()
+	out, err := s.search(ctx, u, st, q, cat, tr, r.URL.Query().Get("lang"), page, lens)
+	<-instDone
 	if err != nil {
 		if errors.Is(err, engine.ErrNotConfigured) {
 			writeErr(w, http.StatusServiceUnavailable, "There is no search engine yet: start the bundled one (docker compose) or set SEARXNG_URL. Your Pocket apps can still be searched.")
@@ -330,6 +362,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if page == 1 && st.History && linkApp(ctx) == "" && r.URL.Query().Get("terms") == "" && !queryBool(r, "nohistory") {
 		_ = s.store.AddHistory(ctx, u.ID, &store.HistoryEntry{Kind: store.KindSearch, Query: q, Category: cat, Results: len(out.Results)})
 	}
+	out.Instant = inst
 	writeJSON(w, http.StatusOK, out)
 }
 

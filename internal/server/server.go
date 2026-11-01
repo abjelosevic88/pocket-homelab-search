@@ -16,6 +16,7 @@ import (
 	core "github.com/abjelosevic88/pocket-homelab-core/sdk"
 	"github.com/abjelosevic88/pocket-homelab-search/internal/config"
 	"github.com/abjelosevic88/pocket-homelab-search/internal/engine"
+	"github.com/abjelosevic88/pocket-homelab-search/internal/instant"
 	"github.com/abjelosevic88/pocket-homelab-search/internal/read"
 	"github.com/abjelosevic88/pocket-homelab-search/internal/store"
 )
@@ -34,6 +35,7 @@ type Server struct {
 	errors   atomic.Int64
 	engine   engine.Searcher
 	fetch    *read.Fetcher
+	online   *instant.Online // currency rates and weather for instant answers
 
 	engMu    sync.Mutex
 	engInfo  []engine.Info // SearXNG's engines, kept ten minutes
@@ -59,7 +61,7 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger, webFS fs.FS) *Se
 		eng = engine.Demo{}
 	}
 	return &Server{cfg: cfg, store: st, log: log, webFS: webFS, started: time.Now(), oidc: &oidcProvider{},
-		engine: eng, fetch: read.NewFetcher(cfg.UserAgent, cfg.FetchPrivate),
+		engine: eng, fetch: read.NewFetcher(cfg.UserAgent, cfg.FetchPrivate), online: instant.NewOnline(cfg.UserAgent),
 		core:    core.New(cfg.CoreURL, core.Options{DB: st.DB, TokenFile: cfg.DataDir + "/core.token", UserAgent: cfg.UserAgent}),
 		results: map[string]cachedSearch{}, inflight: map[string]chan struct{}{}}
 }

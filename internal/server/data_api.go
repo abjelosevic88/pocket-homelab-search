@@ -21,6 +21,7 @@ type exportDoc struct {
 	Bangs    []store.Bang         `json:"bangs"`
 	History  []store.HistoryEntry `json:"history"`
 	Saves    []store.Save         `json:"saves"`
+	Lenses   []store.Lens         `json:"lenses"`
 }
 
 // handleExportJSON: everything of the caller's own, as one JSON file.
@@ -53,6 +54,10 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "export")
 		return
 	}
+	if doc.Lenses, err = s.store.ListLenses(ctx, uid); err != nil {
+		s.fail(w, err, "export")
+		return
+	}
 	w.Header().Set("Content-Disposition", `attachment; filename="pocket-search-`+time.Now().Format("2006-01-02")+`.json"`)
 	writeJSON(w, http.StatusOK, doc)
 }
@@ -72,7 +77,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusRequestEntityTooLarge, "that file is too big")
 		return
 	}
-	out := map[string]int{"rules": 0, "bangs": 0, "history": 0, "skipped": 0}
+	out := map[string]int{"rules": 0, "bangs": 0, "history": 0, "lenses": 0, "skipped": 0}
 	trimmed := strings.TrimSpace(string(body))
 	if strings.HasPrefix(trimmed, "{") {
 		var doc exportDoc
@@ -103,6 +108,25 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			out["bangs"]++
+		}
+		if len(doc.Lenses) > 0 {
+			s.ensureLenses(ctx, uid)
+			have, _ := s.store.ListLenses(ctx, uid)
+			names := map[string]bool{}
+			for _, l := range have {
+				names[strings.ToLower(l.Name)] = true
+			}
+			for _, l := range doc.Lenses {
+				l := l
+				if cleanLens(&l) != "" || names[strings.ToLower(l.Name)] {
+					out["skipped"]++
+					continue
+				}
+				if err := s.store.CreateLens(ctx, uid, &l); err == nil {
+					names[strings.ToLower(l.Name)] = true
+					out["lenses"]++
+				}
+			}
 		}
 		if queryBool(r, "history") {
 			for _, h := range doc.History {

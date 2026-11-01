@@ -35,9 +35,17 @@ export interface SearchResult {
   ms: number
   /** a bang: go here instead (starts with "/" = inside Pocket Search) */
   redirect?: string
+  /** worked out on the server: a sum, a conversion, the weather, your tasks today… */
+  instant?: InstantAnswer
 }
 
-export interface AppItem { title: string; snippet: string; date?: string; url: string; link?: string; kind: string }
+export type InstantKind = 'calc' | 'convert' | 'currency' | 'time' | 'weather' | 'tasks' | 'trip' | 'agenda'
+export interface InstantAnswer { kind: InstantKind; title: string; value: string; detail: string; rows?: { label: string; value: string; url?: string }[]; source?: string; url?: string }
+
+/** A saved way of searching; sites, boost and hide are one domain per line. */
+export interface Lens { id: number; name: string; icon: string; sites: string; boost: string; hide: string; words: string; language: string; position: number; created_at: string; updated_at: string }
+
+export interface AppItem { title: string; snippet: string; date?: string; url: string; link?: string; kind: string; strong?: boolean }
 export interface AppSection { app: string; name: string; items: AppItem[]; error?: string; off?: boolean; more?: string; ms: number }
 export interface AppsResult { query: string; sections: AppSection[] }
 

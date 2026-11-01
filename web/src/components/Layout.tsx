@@ -44,6 +44,7 @@ export function createItems(navigate: (to: string) => void): MenuItem[] {
   return [
     { label: 'New search', icon: 'search', hint: 'N', onSelect: () => { navigate('/'); setTimeout(focusSearch, 50) } },
     { label: 'Raise, lower or hide a site', icon: 'filter', onSelect: () => navigate('/sites?add=1') },
+    { label: 'Make a lens', icon: 'columns', onSelect: () => navigate('/lenses?add=1') },
     { label: 'Add a bang', icon: 'zap', onSelect: () => navigate('/bangs?add=1') },
   ]
 }
@@ -114,6 +115,7 @@ export default function Layout() {
     { id: 'apps', label: 'Search your apps', icon: 'layers', keywords: 'notes tasks documents pocket', run: () => navigate('/search?cat=apps') },
     { id: 'history', label: 'History', icon: 'clock', hint: 'H', keywords: 'recent searches opened', run: () => navigate('/history') },
     { id: 'sites', label: 'Sites: raise, lower or hide', icon: 'filter', hint: 'S', keywords: 'block boost pin rules domains', run: () => navigate('/sites') },
+    { id: 'lenses', label: 'Lenses', icon: 'columns', keywords: 'filter recipes code local forums only sites', run: () => navigate('/lenses') },
     { id: 'bangs', label: 'Bangs', icon: 'zap', hint: 'B', keywords: 'shortcuts ! redirect', run: () => navigate('/bangs') },
     { id: 'engines', label: 'Settings: search engines', icon: 'globe', keywords: 'google bing duckduckgo brave searxng', run: () => navigate('/settings/engines') },
     { id: 'connected', label: 'Settings: connected apps', icon: 'link', keywords: 'pocket core reader notes tasks', run: () => navigate('/settings/apps') },
@@ -145,7 +147,7 @@ export default function Layout() {
   )
 }
 
-const SECTION: Record<string, [string, string]> = { '': ['Search', '/'], search: ['Search', '/'], read: ['Reading view', '/'], history: ['History', '/history'], sites: ['Sites', '/sites'], bangs: ['Bangs', '/bangs'] }
+const SECTION: Record<string, [string, string]> = { '': ['Search', '/'], search: ['Search', '/'], read: ['Reading view', '/'], history: ['History', '/history'], sites: ['Sites', '/sites'], lenses: ['Lenses', '/lenses'], bangs: ['Bangs', '/bangs'] }
 
 function TopBar({ onMenu, onPalette, mobile, compact, sidebarOpen, crumb, results }: { onMenu: () => void; onPalette: () => void; mobile: boolean; compact: boolean; sidebarOpen: boolean; crumb: string; results: boolean }) {
   const { user, themeMode, setThemeMode, status, setUser } = useApp()

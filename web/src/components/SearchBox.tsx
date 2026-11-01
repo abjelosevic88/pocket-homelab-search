@@ -10,8 +10,8 @@ import { Icon } from './icons'
 
 type Row = { kind: 'history' | 'suggestion' | 'bang'; text: string; label?: string }
 
-export function SearchBox({ initial = '', cat = '', size = 'lg', autoFocus = false, placeholder = 'Search the web and your apps' }: {
-  initial?: string; cat?: string; size?: 'lg' | 'md'; autoFocus?: boolean; placeholder?: string
+export function SearchBox({ initial = '', cat = '', lens = 0, size = 'lg', autoFocus = false, placeholder = 'Search the web and your apps' }: {
+  initial?: string; cat?: string; lens?: number; size?: 'lg' | 'md'; autoFocus?: boolean; placeholder?: string
 }) {
   const { settings } = useApp()
   const navigate = useNavigate()
@@ -66,7 +66,8 @@ export function SearchBox({ initial = '', cat = '', size = 'lg', autoFocus = fal
     setOpen(false)
     input.current?.blur()
     const c = cat ? `&cat=${encodeURIComponent(cat)}` : ''
-    navigate(`/search?q=${encodeURIComponent(t)}${c}`)
+    const l = lens && !t.startsWith('!') ? `&lens=${lens}` : ''
+    navigate(`/search?q=${encodeURIComponent(t)}${c}${l}`)
   }
 
   const pickRow = (r: Row) => {

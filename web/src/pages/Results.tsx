@@ -5,8 +5,11 @@ import { createPortal } from 'react-dom'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Icon } from '../components/icons'
 import { useCrumb, announceChange } from '../components/Layout'
+import { InstantCard } from '../components/InstantCard'
+import { LensChips } from '../components/LensChips'
 import { AnswerCard, AppSectionList, AppsPanel, InfoboxCard } from '../components/Panels'
-import { ResultCard, SiteIcon, VideoCard } from '../components/ResultCard'
+import { PreviewBody } from '../components/Preview'
+import { AppHitCard, ResultCard, SiteIcon, VideoCard } from '../components/ResultCard'
 import { SearchBox } from '../components/SearchBox'
 import { Select } from '../components/Select'
 import { useSend } from '../components/send'
@@ -14,7 +17,7 @@ import { copyText, Empty, errMsg, type MenuItem, Menu, modalOpen, Modal, rectOf,
 import { api, ApiError, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
 import { plural } from '../lib/format'
-import { imgURL, type AppSection, type AppsResult, type Category, type Hit, type RuleAction, type Save, type SearchResult, type SiteRule, type TimeRange } from '../lib/types'
+import { imgURL, type AppItem, type AppSection, type AppsResult, type Category, type Hit, type RuleAction, type Save, type SearchResult, type SiteRule, type TimeRange } from '../lib/types'
 
 const TABS: { id: Category; label: string; icon: string }[] = [
   { id: 'general', label: 'All', icon: 'search' },
@@ -41,6 +44,20 @@ const RULES: { action: RuleAction; label: (d: string) => string; icon: string; d
 ]
 
 type Failure = { status: number; message: string }
+/** A strong match from an app, shown among the web results. */
+type Inline = { app: string; name: string; item: AppItem }
+const itemKey = (app: string, it: AppItem) => app + '\u0000' + it.url + '\u0000' + it.title
+/** Up to three strong matches, at most two from one app. */
+function pickInline(sections: AppSection[] | null): Inline[] {
+  const out: Inline[] = []
+  for (const s of sections || []) {
+    let n = 0
+    for (const it of s.items) {
+      if (it.strong && n < 2 && out.length < 3) { out.push({ app: s.app, name: s.name, item: it }); n++ }
+    }
+  }
+  return out
+}
 
 export default function Results() {
   // the search box lives in the top bar on this page (Layout's slot), like a search engine
@@ -55,16 +72,18 @@ export default function Results() {
   const defaultCat = (settings?.default_category || 'general') as Category
   const cat = ((params.get('cat') || defaultCat) as Category)
   const tabValue = (id: Category) => id === defaultCat ? '' : id
+  const lensId = Number(params.get('lens') || 0) || 0
+  const lensParam = lensId ? `&lens=${lensId}` : ''
   // a tab about to be clicked starts its search now: the server keeps the answer a few minutes
   // and a click while it is on its way waits for the same search, so switching is near-instant
   const warmed = useRef(new Set<string>())
   const warm = (id: Category) => {
     if (!q || id === cat || id === 'apps') return
     const t = time ? `&time=${time}` : ''
-    const key = `${q}\u0000${id}\u0000${t}`
+    const key = `${q}\u0000${id}\u0000${t}\u0000${lensParam}`
     if (warmed.current.has(key)) return
     warmed.current.add(key)
-    fetch(`${V1}/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(id)}${t}&nohistory=1`, { credentials: 'same-origin' }).catch(() => {})
+    fetch(`${V1}/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(id)}${t}${lensParam}&nohistory=1`, { credentials: 'same-origin' }).catch(() => {})
   }
   const time = (params.get('time') || '') as TimeRange
   const onlyApp = params.get('app') || ''
@@ -85,7 +104,12 @@ export default function Results() {
   const [lightbox, setLightbox] = useState<Hit | null>(null)
   const [moreMenu, setMoreMenu] = useState<Anchor | null>(null)
   const [reload, setReload] = useState(0)
+  const [inline, setInline] = useState<Inline[]>([])
+  const [preview, setPreview] = useState<Hit | null>(null)
   const seq = useRef(0)
+  // the apps' answer while the web results wait for it (at most 600 ms)
+  const appsPending = useRef<Promise<void> | null>(null)
+  const appsLatest = useRef<AppSection[] | null>(null)
 
   const markSaved = useCallback((s: Save) => setHits(hs => hs.map(h => h.url === s.url ? { ...h, saved: [...h.saved.filter(x => x.app !== s.app), s] } : h)), [])
   const send = useSend(markSaved)
@@ -100,11 +124,11 @@ export default function Results() {
   // the web results
   useEffect(() => {
     const id = ++seq.current
-    setRes(null); setHits([]); setPage(1); setFail(null); setFocus(-1)
+    setRes(null); setHits([]); setPage(1); setFail(null); setFocus(-1); setInline([]); setPreview(null)
     if (!q || !web) { setLoading(false); return }
     setLoading(true)
     const t = time ? `&time=${time}` : ''
-    api.get<SearchResult>(`${V1}/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(cat)}${t}`)
+    api.get<SearchResult>(`${V1}/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(cat)}${t}${lensParam}`)
       .then(r => {
         if (id !== seq.current) return
         if (r.redirect) {
@@ -112,26 +136,38 @@ export default function Results() {
           else window.location.replace(r.redirect)
           return
         }
-        setRes(r); setHits(r.results)
-        announceChange()
+        // strong matches from your apps go on top of the results, so the list
+        // waits a moment for them instead of moving once they arrive
+        const show = () => {
+          if (id !== seq.current) return
+          setInline(cat === 'general' ? pickInline(appsLatest.current) : [])
+          setRes(r); setHits(r.results); setLoading(false)
+          announceChange()
+        }
+        const pending = cat === 'general' ? appsPending.current : null
+        if (pending) Promise.race([pending, new Promise<void>(ok => window.setTimeout(ok, 600))]).then(show)
+        else show()
       })
-      .catch(e => { if (id === seq.current) setFail({ status: e instanceof ApiError ? e.status : 0, message: errMsg(e) }) })
-      .finally(() => { if (id === seq.current) setLoading(false) })
-  }, [q, cat, time, web, reload]) // eslint-disable-line react-hooks/exhaustive-deps
+      .catch(e => { if (id === seq.current) { setFail({ status: e instanceof ApiError ? e.status : 0, message: errMsg(e) }); setLoading(false) } })
+  }, [q, cat, time, web, reload, lensId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // your Pocket apps, at the same time (never holding up the web results)
   const wantApps = !!q && (cat === 'apps' || (cat === 'general' && (settings?.apps_in_results !== false)))
   useEffect(() => {
     setApps(null)
+    appsLatest.current = null
+    appsPending.current = null
     if (!wantApps || q.startsWith('!')) return
     let alive = true
+    let settle = () => {}
+    appsPending.current = new Promise<void>(ok => { settle = ok })
     setAppsLoading(true)
     const extra = cat === 'apps' ? (onlyApp ? `&app=${encodeURIComponent(onlyApp)}` : '&all=1') : ''
     api.get<AppsResult>(`${V1}/search/apps?q=${encodeURIComponent(q)}${extra}`)
-      .then(r => { if (alive) setApps(r.sections) })
+      .then(r => { if (alive) { appsLatest.current = r.sections; setApps(r.sections) } })
       .catch(() => { if (alive) setApps([]) })
-      .finally(() => { if (alive) setAppsLoading(false) })
-    return () => { alive = false }
+      .finally(() => { if (alive) { setAppsLoading(false); appsPending.current = null } settle() })
+    return () => { alive = false; settle() }
   }, [q, cat, onlyApp, wantApps])
 
   // when the engine is missing, still show the apps next to the notice
@@ -150,7 +186,7 @@ export default function Results() {
     setMoreBusy(true)
     try {
       const t = time ? `&time=${time}` : ''
-      const r = await api.get<SearchResult>(`${V1}/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(cat)}${t}&page=${next}`)
+      const r = await api.get<SearchResult>(`${V1}/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(cat)}${t}${lensParam}&page=${next}`)
       setHits(hs => { const seen = new Set(hs.map(h => h.url)); return [...hs, ...r.results.filter(h => !seen.has(h.url))] })
       setRes(prev => prev ? { ...prev, more: r.more && r.results.length > 0, hidden: prev.hidden + r.hidden } : prev)
       setPage(next)
@@ -205,6 +241,7 @@ export default function Results() {
       if (e.metaKey || e.ctrlKey || e.altKey) return
       const t = e.target as HTMLElement
       if (t.closest('input, textarea, select, [contenteditable="true"]') || modalOpen() || document.querySelector('.menu, .popover, .sel-pop')) return
+      if (e.key === 'Escape' && preview) { e.preventDefault(); setPreview(null); return }
       const n = Number(e.key)
       if (n >= 1 && n <= TABS.length) { e.preventDefault(); setParam('cat', tabValue(TABS[n - 1].id)); return }
       if (!hits.length || cat === 'images') return
@@ -220,28 +257,47 @@ export default function Results() {
         if (settings?.new_tab) window.open(hits[focus].url, '_blank', 'noopener,noreferrer'); else window.location.href = hits[focus].url
       } else if (e.key === 'r' && focus >= 0 && hits[focus]) {
         e.preventDefault(); navigate(`/read?url=${encodeURIComponent(hits[focus].url)}`)
+      } else if (e.key === 'p' && focus >= 0 && hits[focus] && cat !== 'videos') {
+        e.preventDefault(); togglePreview(hits[focus])
       }
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   }) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const togglePreview = (h: Hit) => setPreview(p => p?.url === h.url ? null : h)
+  // items shown among the results are left out of the side panel (an app whose
+  // every match moved there is left out too, not counted as "had nothing")
+  const sideSections = useMemo(() => {
+    if (!apps || !inline.length) return apps
+    const shown = new Set(inline.map(x => itemKey(x.app, x.item)))
+    return apps.flatMap(s => {
+      const items = s.items.filter(it => !shown.has(itemKey(s.app, it)))
+      return items.length || !s.items.length ? [{ ...s, items }] : []
+    })
+  }, [apps, inline])
+
   const moreTab = MORE.find(m => m.id === cat)
   const showSide = web && cat !== 'images' && cat !== 'videos'
   const box = res?.infoboxes?.[0]
   const aiMode = settings?.ai_answers || 'ask'
+  const previewSide = !!preview && wide
   const side = showSide && !!q && (
-    <aside className="srp-side">
-      {(aiMode !== 'off' || aiParam) && !engineMissing && <AnswerCard q={q} cat={cat} time={time} mode={aiMode} auto={aiParam} />}
-      {cat === 'general' && (wantApps || engineMissing) && <AppsPanel sections={apps} loading={appsLoading} q={q} />}
-      {box && <InfoboxCard box={box} />}
+    <aside className={`srp-side ${previewSide ? 'is-preview' : ''}`}>
+      {previewSide
+        ? <section className="panel pv-panel"><PreviewBody hit={preview!} onClose={() => setPreview(null)} /></section>
+        : <>
+          {(aiMode !== 'off' || aiParam) && !engineMissing && <AnswerCard q={q} cat={cat} time={time} mode={aiMode} auto={aiParam} />}
+          {cat === 'general' && (wantApps || engineMissing) && <AppsPanel sections={sideSections} loading={appsLoading} q={q} />}
+          {box && <InfoboxCard box={box} />}
+        </>}
     </aside>
   )
 
   return (
     <div className="srp">
       <div className="srp-bar">
-        {slot ? createPortal(<SearchBox initial={q} cat={tabValue(cat)} size="md" />, slot) : <SearchBox initial={q} cat={tabValue(cat)} size="md" />}
+        {slot ? createPortal(<SearchBox initial={q} cat={tabValue(cat)} lens={lensId} size="md" />, slot) : <SearchBox initial={q} cat={tabValue(cat)} lens={lensId} size="md" />}
         <div className="srp-tabs">
           <nav className="srp-tablist" role="tablist" aria-label="What to search">
             {TABS.map((t, i) => (
@@ -257,6 +313,7 @@ export default function Results() {
           {moreMenu && <Menu anchor={moreMenu} width={180} items={MORE.map(m => ({ label: m.label, icon: m.icon, checked: cat === m.id ? true : undefined, onSelect: () => setParam('cat', tabValue(m.id)) }))} onClose={() => setMoreMenu(null)} />}
           {web && <div className="srp-time"><Select value={time} onChange={v => setParam('time', v)} options={TIMES} ariaLabel="When" /></div>}
         </div>
+        {web && <LensChips active={lensId} onPick={id => setParam('lens', id ? String(id) : '')} />}
       </div>
 
       {!q ? (
@@ -265,21 +322,26 @@ export default function Results() {
         <AppsPage sections={apps} loading={appsLoading} q={q} onlyApp={onlyApp} onAll={() => setParam('app', '')} />
       ) : (
         <div className={`srp-body ${side ? 'with-side' : ''} ${wide ? 'is-wide' : ''}`}>
+          {/* narrow screens: the instant answer before everything else */}
+          {!wide && cat === 'general' && res?.instant && <div className="srp-instant"><InstantCard a={res.instant} /></div>}
           <div className="srp-main" ref={listRef}>
             {loading && <ResultsSkeleton images={cat === 'images'} />}
             {fail && (engineMissing
               ? <div className="callout warn"><Icon name="alert" size={16} /><div><b>The web search engine is not running.</b> {fail.message.replace(/^There is no search engine yet: /, '')}<div className="mt-sm small muted">The engine (SearXNG) comes with Pocket Search in its docker-compose file: run <code>docker compose up -d</code> again, or set <code>SEARXNG_URL</code>.</div></div></div>
               : <div className="callout danger"><Icon name="alert" size={16} /><div className="grow"><b>The search did not go through.</b> {fail.message}</div><button type="button" className="btn sm" onClick={() => setReload(n => n + 1)}><Icon name="refresh" size={14} />Try again</button></div>)}
             {res && <>
+              {wide && cat === 'general' && res.instant && <InstantCard a={res.instant} />}
               {res.corrections.length > 0 && <p className="srp-fix">Did you mean <Link to={`/search?q=${encodeURIComponent(res.corrections[0])}${cat !== 'general' ? `&cat=${encodeURIComponent(cat)}` : ''}`}>{res.corrections[0]}</Link>?</p>}
               {res.answers.map((a, i) => <div key={i} className="srp-answer"><Icon name="zap" size={15} /><span className="grow">{a.text}</span>{a.url && <a className="small" href={a.url} target="_blank" rel="noreferrer noopener">Source</a>}</div>)}
+              {inline.length > 0 && <div className="res-list res-apps-inline">{inline.map(x => <AppHitCard key={itemKey(x.app, x.item)} item={x.item} app={x.app} appName={x.name} />)}</div>}
               {hits.length === 0 && <Empty title="No results" icon="search">Nothing came back for “{q}”{time ? ' in this time range' : ''}.{res.suggestions.length > 0 && <div className="chips srp-sugg-empty">{res.suggestions.slice(0, 6).map(s => <Link key={s} className="chip" to={`/search?q=${encodeURIComponent(s)}`}>{s}</Link>)}</div>}</Empty>}
               {cat === 'images'
                 ? <ImageGrid hits={hits} onPick={setLightbox} />
                 : <div className={cat === 'videos' ? 'vid-list' : 'res-list'}>
                   {hits.map((h, i) => cat === 'videos'
                     ? <VideoCard key={h.url} hit={h} active={i === focus} newTab={!!settings?.new_tab} apps={send.apps} menu={menuFor(h)} onOpen={opened} />
-                    : <ResultCard key={h.url} hit={h} active={i === focus} newTab={!!settings?.new_tab} apps={send.apps} menu={menuFor(h)} onOpen={opened} thumb={cat === 'news'} />)}
+                    : <ResultCard key={h.url} hit={h} active={i === focus} newTab={!!settings?.new_tab} apps={send.apps} menu={menuFor(h)} onOpen={opened} thumb={cat === 'news'}
+                      onPreview={togglePreview} previewing={preview?.url === h.url} />)}
                 </div>}
               {res.more && hits.length > 0 && <div className="srp-more"><button type="button" className="btn" disabled={moreBusy} onClick={more}>{moreBusy ? 'Loading…' : 'More results'}</button></div>}
               <div className="srp-foot">
@@ -293,6 +355,7 @@ export default function Results() {
         </div>
       )}
       {lightbox && <Lightbox hit={lightbox} onClose={() => setLightbox(null)} onOpen={opened} />}
+      {preview && !previewSide && <Modal title="Preview" onClose={() => setPreview(null)} size="lg" className="pv-modal"><PreviewBody hit={preview} /></Modal>}
     </div>
   )
 }

@@ -78,6 +78,11 @@ func (s *Server) Router() http.Handler {
 			r.Put("/rules/{id}", s.handleUpdateRule)
 			r.Delete("/rules/{id}", s.handleDeleteRule)
 
+			r.Get("/lenses", s.handleListLenses)
+			r.Post("/lenses", s.handleCreateLens)
+			r.Put("/lenses/{id}", s.handleUpdateLens)
+			r.Delete("/lenses/{id}", s.handleDeleteLens)
+
 			r.Get("/bangs", s.handleListBangs)
 			r.Post("/bangs", s.handleCreateBang)
 			r.Put("/bangs/{id}", s.handleUpdateBang)

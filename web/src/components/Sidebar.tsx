@@ -19,6 +19,7 @@ export function Sidebar({ onNavigate, dash }: { onNavigate: () => void; dash: Da
     { to: '/search?cat=apps' + (q.get('q') ? '&q=' + encodeURIComponent(q.get('q')!) : ''), label: 'Your apps', icon: 'layers', active: loc.pathname === '/search' && q.get('cat') === 'apps' },
     { to: '/history', label: 'History', icon: 'clock', active: loc.pathname === '/history', count: dash?.searches_week, title: 'searches this week' },
     { to: '/sites', label: 'Sites', icon: 'filter', active: loc.pathname === '/sites', count: dash?.rules, title: 'site rules' },
+    { to: '/lenses', label: 'Lenses', icon: 'columns', active: loc.pathname === '/lenses' },
     { to: '/bangs', label: 'Bangs', icon: 'zap', active: loc.pathname === '/bangs', count: dash?.bangs, title: 'your own bangs' },
   ]
   return (

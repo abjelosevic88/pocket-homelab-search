@@ -48,7 +48,10 @@
 
 - **Private by design** — searches go from your server to the engines; pictures, thumbnails and site icons are fetched by the server, and pages open without a referrer, so sites never learn what you searched for or who you are.
 - **Its own engine** — `docker compose up` starts the app and SearXNG together. The engine has no port of its own and no settings file to edit; engines are switched on and off per person in Settings.
-- **Your apps in the results** — your notes, saved articles, tasks, documents, calendar, contacts, mail, issues, cards, books, tabs, drawings, trips… searched at the same time as the web (with Pocket Core, nothing to paste). `!notes groceries` searches one app.
+- **Your apps in the results** — a note or document named like what you searched comes first, among the web results; everything else from your notes, saved articles, tasks, documents, calendar, contacts, mail, issues, cards, books, tabs, drawings, trips… searched at the same time as the web (with Pocket Core, nothing to paste). `!notes groceries` searches one app.
+- **Instant answers** — sums, unit and currency conversions, the time anywhere and the weather, worked out on your server; "my tasks today", "next trip" and "my calendar today" straight from your Pocket apps.
+- **Lenses** — one click under the search box: Recipes, Code, Forums, Local, Science, or your own — only some sites, some sites first, some never, words added, a language.
+- **Previews** — read a result's text beside the list without leaving the page.
 - **Your ranking** — pin a site to the top, raise or lower it, or hide it everywhere (Pinterest, content farms). Each rule counts the results it changed.
 - **Bangs** — `!w eiffel tower`, `!yt`, `!gh`, `!m`… about 60 built in, plus your own. They work from the browser's address bar too, before the page even loads.
 - **Reading view** — open any result as clean text with pictures through your server; left-out players are counted.

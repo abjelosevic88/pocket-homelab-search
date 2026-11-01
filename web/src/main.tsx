@@ -18,6 +18,7 @@ import Read from './pages/Read'
 import History from './pages/History'
 import Sites from './pages/Sites'
 import Bangs from './pages/Bangs'
+import Lenses from './pages/Lenses'
 import Settings from './pages/Settings'
 
 function Gate({ children }: { children: React.ReactNode }) {
@@ -42,6 +43,7 @@ function App() {
         <Route path="/read" element={<Read />} />
         <Route path="/history" element={<History />} />
         <Route path="/sites" element={<Sites />} />
+        <Route path="/lenses" element={<Lenses />} />
         <Route path="/bangs" element={<Bangs />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

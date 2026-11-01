@@ -568,3 +568,73 @@ func TestSameSearchAtOnceAsksTheEngineOnce(t *testing.T) {
 		t.Fatalf("engine asked %d times, want 1", n)
 	}
 }
+
+func TestLensesArePersonalAndFilter(t *testing.T) {
+	a := newApp(t)
+	_, _, list := a.call(a.alice, "GET", "/api/v1/lenses", nil)
+	if len(list) != len(defaultLenses) {
+		t.Fatalf("alice starts with %d lenses, want %d", len(list), len(defaultLenses))
+	}
+	l := a.ok(a.alice, "POST", "/api/v1/lenses", map[string]any{"name": "Wiki", "icon": "📚", "sites": "https://en.wikipedia.org/x\nexample.org", "words": "history", "hide": "pinterest.com"})
+	id := int64(l["id"].(float64))
+	if l["sites"] != "en.wikipedia.org\nexample.org" {
+		t.Fatalf("sites = %q", l["sites"])
+	}
+	m := a.ok(a.alice, "GET", fmt.Sprintf("/api/v1/search?q=x&lens=%d", id), nil)
+	if got := urls(m); strings.Join(got, " ") != "https://example.org/a https://en.wikipedia.org/wiki/X" {
+		t.Fatalf("lens results = %v", got)
+	}
+	if q := a.eng.last().Get("q"); q != "x history (site:en.wikipedia.org OR site:example.org)" {
+		t.Fatalf("engine asked %q", q)
+	}
+	// another person's lens is not theirs to use or change
+	for _, c := range []struct{ method, path string }{{"GET", fmt.Sprintf("/api/v1/search?q=x&lens=%d", id)}, {"PUT", fmt.Sprintf("/api/v1/lenses/%d", id)}, {"DELETE", fmt.Sprintf("/api/v1/lenses/%d", id)}} {
+		if code, _, _ := a.call(a.bob, c.method, c.path, map[string]any{"name": "mine"}); code != 404 {
+			t.Fatalf("bob %s %s → %d", c.method, c.path, code)
+		}
+	}
+	if code, _, _ := a.call(a.alice, "POST", "/api/v1/lenses", map[string]any{"name": "empty"}); code != 400 {
+		t.Fatalf("empty lens → %d", code)
+	}
+	// deleted defaults stay deleted
+	for _, x := range list {
+		a.call(a.alice, "DELETE", fmt.Sprintf("/api/v1/lenses/%d", int64(x.(map[string]any)["id"].(float64))), nil)
+	}
+	if _, _, again := a.call(a.alice, "GET", "/api/v1/lenses", nil); len(again) != 1 {
+		t.Fatalf("after deleting the defaults: %d lenses", len(again))
+	}
+}
+
+func TestInstantAnswersInSearch(t *testing.T) {
+	a := newApp(t)
+	m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape("15% of 240"), nil)
+	inst, _ := m["instant"].(map[string]any)
+	if inst == nil || inst["value"] != "36" || inst["kind"] != "calc" {
+		t.Fatalf("instant = %v", m["instant"])
+	}
+	if m := a.ok(a.alice, "GET", "/api/v1/search?q=nikola+tesla", nil); m["instant"] != nil {
+		t.Fatalf("instant for a plain search: %v", m["instant"])
+	}
+	// "my tasks today" reads the person's own Pocket Tasks
+	tasks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/dashboard" {
+			_, _ = io.WriteString(w, `{"today":2,"overdue":1,"upcoming_week":5,"next":[{"id":1,"title":"Call the plumber","due":"2020-01-01"}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(tasks.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{"tasks": map[string]any{"mode": "direct", "url": tasks.URL, "token": "pt_x"}}})
+	m = a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape("my tasks today"), nil)
+	inst, _ = m["instant"].(map[string]any)
+	if inst == nil || inst["value"] != "2 tasks due today" || inst["source"] != "Pocket Tasks" {
+		t.Fatalf("tasks instant = %v", m["instant"])
+	}
+	if rows := inst["rows"].([]any); len(rows) != 1 || rows[0].(map[string]any)["value"] != "Overdue" {
+		t.Fatalf("rows = %v", inst["rows"])
+	}
+	// Bob has no tasks connection: no answer, just results
+	if m := a.ok(a.bob, "GET", "/api/v1/search?q="+url.QueryEscape("my tasks today"), nil); m["instant"] != nil {
+		t.Fatalf("bob's instant = %v", m["instant"])
+	}
+}

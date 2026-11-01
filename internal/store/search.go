@@ -216,6 +216,9 @@ func (s *Store) DeleteRule(ctx context.Context, uid, id int64) error {
 // CountRuleHits adds to the "changed N results" counters.
 func (s *Store) CountRuleHits(ctx context.Context, uid int64, hits map[int64]int) {
 	for id, n := range hits {
+		if id <= 0 {
+			continue // a lens's own site, not a rule
+		}
 		_, _ = s.DB.ExecContext(ctx, `UPDATE site_rules SET hits = hits + ? WHERE id = ? AND user_id = ?`, n, id, uid)
 	}
 }

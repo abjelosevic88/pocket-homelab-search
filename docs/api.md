@@ -7,6 +7,8 @@ JSON over HTTP under `/api/v1`. Authenticate with the session cookie (the UI), o
 | | |
 |---|---|
 | `GET /search?q=&cat=&time=&page=&lang=` | Web search. `cat` = `general` (default: the person's), `images`, `videos`, `news`, `music`, `it`, `science`, `files`, `map`, `social media`; `time` = `day`/`week`/`month`/`year`; `page` 1–20. Answer: `results` (`url`, `title`, `content`, `domain`, `engines`, `published`, `thumbnail`, `image`, `rule` = `pin`/`boost`/`lower` when a site rule moved it, `saved` = where you sent it), `answers`, `infoboxes`, `suggestions`, `corrections`, `unresponsive`, `hidden` + `hidden_sites` (your rules), `more`. A search with a bang answers `{"redirect": "…"}` instead. `nohistory=1` keeps it out of history; `terms=` works like `q=` and never adds history (Pocket Core's AI tool uses it). |
+| `GET /search?…&lens=<id>` | Search through a lens: only its sites (asked as `site:` filters and filtered again), its sites first or hidden, its words added, its language. |
+| `instant` in a search's answer | On the All tab's first page: a sum (`15% of 240`, `(3+4)*2^3`), a conversion (`5 km in miles`, `100 f to c`), a currency (`100 eur to bam`, rates via open.er-api.com, BAM pegged), the time in a city (`time in tokyo`), the weather (`weather sarajevo`, Open-Meteo), or from your Pocket apps: `my tasks today` (Tasks), `next trip` (Travel), `my calendar today` / `tomorrow` (Calendar). `{kind, title, value, detail, rows, source, url}`. |
 | `GET /search/apps?q=&app=` | Your Pocket apps, searched at once: `sections` (`app`, `name`, `items` with `title`, `snippet`, `date`, `url` = the item in the app, `kind`; `error` / `off` when an app is not connected). |
 | `GET /suggest?q=` | `history`, `suggestions`, and `bangs` while typing `!x`. `format=opensearch` answers browsers. |
 | `POST /answer` `{"q", "cat", "time"}` | AI answer from the results: `answer` (with `[n]` citations), `sources`, `provider`. |
@@ -20,6 +22,8 @@ JSON over HTTP under `/api/v1`. Authenticate with the session cookie (the UI), o
 `GET /history?q=&kind=search|open&limit=&offset=` · `DELETE /history/{id}` · `POST /history/clear {"range": "hour|day|week|all"}` · `POST /history/open {url, title, query}`
 
 `GET /rules` · `POST /rules {domain, action: pin|boost|lower|block, note}` (adds or changes the site's rule) · `PUT /rules/{id}` · `DELETE /rules/{id}`
+
+`GET /lenses` (five to start with: Recipes, Code, Forums, Local, Science) · `POST /lenses {name, icon, sites, boost, hide, words, language}` · `PUT /lenses/{id}` · `DELETE /lenses/{id}`
 
 `GET /bangs` (`mine`, `builtin`) · `POST /bangs {trigger, name, url with {q}}` · `PUT /bangs/{id}` · `DELETE /bangs/{id}`
 
