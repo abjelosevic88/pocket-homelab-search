@@ -41,6 +41,8 @@ services:
       # Signs SearXNG's own cookies; the engine is private to the app, but a
       # value of your own does not hurt.
       SEARXNG_SECRET: ${ENGINE_SECRET:-pocket-search-private-engine}
+      # two processes: a search, the AI answer's and a hovered tab's no longer queue behind each other
+      GRANIAN_WORKERS: "2"
     configs:
       - source: engine-settings
         target: /pocket/settings.yml
@@ -77,7 +79,7 @@ configs:
         formats: [html, json]
       outgoing:
         # a page waits for its slowest engine: none may hold it longer than this
-        request_timeout: 3.0
+        request_timeout: 2.0
         max_request_timeout: 10.0
         pool_connections: 100
         pool_maxsize: 20
@@ -85,3 +87,8 @@ configs:
         # answers in 3-5 s and holds every video search up; people can switch it on in Settings → Engines
         - name: vimeo
           disabled: true
+        # a miss (most searches) often takes 2-3 s; the infobox is not worth the wait
+        - name: wikipedia
+          timeout: 1.2
+        - name: wikidata
+          timeout: 1.2
