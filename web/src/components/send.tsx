@@ -63,7 +63,7 @@ const ICONS: Record<string, string> = {
   reader: 'book-open', notes: 'note', tasks: 'check-circle', lookout: 'binoculars', wishlist: 'star', clips: 'copy', bookshelf: 'book-open',
   documents: 'archive', files: 'package', calendar: 'calendar', contacts: 'users', kitchen: 'habit', inventory: 'package', boards: 'columns',
   projects: 'layers', podcasts: 'rss', music: 'play', library: 'book-open', day: 'today', learn: 'sparkles', travel: 'plane', draw: 'palette',
-  photos: 'image', watch: 'video', audiobooks: 'play', mail: 'mail',
+  photos: 'image', watch: 'video', audiobooks: 'play', mail: 'mail', blog: 'edit',
 }
 export const appIcon = (slug: string) => ICONS[slug] || 'layers'
 

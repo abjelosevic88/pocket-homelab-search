@@ -650,3 +650,30 @@ func TestItemURLKeepsPathSlashes(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+// Pocket Blog's posts (drafts too) open at the post in Blog (/posts/{id}).
+func TestYourAppsBlog(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"query":"sarajevo","results":[{"id":12,"title":"Spring in Sarajevo","snippet":"…the <b>river</b> in Sarajevo was loud","status":"published","kind":"post","date":"2026-11-06T09:30:00Z","url":"https://blog.example/spring","tags":["travel"],"link":"https://blog.example/posts/12"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"blog": map[string]any{"mode": "direct", "url": sib.URL, "token": "pbl_secret", "public": "https://blog.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=sarajevo&app=blog", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 1 || !strings.Contains(gotQuery, "q=sarajevo") || !strings.Contains(gotQuery, "limit=8") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	it := items[0].(map[string]any)
+	if it["url"] != "https://blog.example/posts/12" || it["title"] != "Spring in Sarajevo" || it["kind"] != "post" || it["date"] != "2026-11-06T09:30:00Z" || strings.Contains(it["snippet"].(string), "<b>") {
+		t.Fatalf("item = %v", it)
+	}
+}
