@@ -40,6 +40,9 @@ type appSearch struct {
 	kind                           string // what a row is ("note", "task"…), shown on the card
 	// a title made of several fields (wins over title when it gives one)
 	titleOf func(row map[string]any) string
+	// rows of more than one kind: each row's page in the app and what it is
+	// (win over route and kind when they give one)
+	routeOf, kindOf func(row map[string]any) string
 }
 
 // appSend says how to send a result to one app.
@@ -377,6 +380,11 @@ func (s *Server) searchApp(ctx context.Context, u *store.User, st store.Settings
 				it.Title = t
 			}
 		}
+		if a.search.kindOf != nil {
+			if k := a.search.kindOf(row); k != "" {
+				it.Kind = k
+			}
+		}
 		if it.Title == "" {
 			it.Title = it.Link
 		}
@@ -390,7 +398,13 @@ func (s *Server) searchApp(ctx context.Context, u *store.User, st store.Settings
 		// Pocket Files marks matched words with \x01…\x02
 		it.Snippet = oneLine(stripMarkup(strings.NewReplacer("\x01", "", "\x02", "").Replace(it.Snippet)), 220)
 		it.Strong = strongMatch(it.Title, q)
-		it.URL = itemURL(sib.public, a.search.route, row, a.search.id)
+		route := a.search.route
+		if a.search.routeOf != nil {
+			if r := a.search.routeOf(row); r != "" {
+				route = r
+			}
+		}
+		it.URL = itemURL(sib.public, route, row, a.search.id)
 		sec.Items = append(sec.Items, it)
 		if len(sec.Items) >= limit {
 			break

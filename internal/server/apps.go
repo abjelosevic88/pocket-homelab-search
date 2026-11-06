@@ -92,6 +92,9 @@ var pocketApps = []pocketApp{
 		search: &appSearch{scope: "chat:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
 			id: f("id"), title: f("conversation_title", "author_name"), titleOf: chatTitle, snippet: f("snippet", "body"), date: f("created_at"),
 			route: "/c/{conversation_id}?m={id}", kind: "message"}},
+	{slug: "forms", name: "Pocket Forms", bang: "forms", reason: "Search your forms and the answers people sent beside the web",
+		search: &appSearch{scope: "forms:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "items",
+			id: f("id"), title: f("title"), snippet: f("subtitle"), date: f("date"), routeOf: formsRoute, kindOf: formsKind, kind: "form"}},
 	{slug: "travel", name: "Pocket Travel", bang: "trips", reason: "Search your trips beside the web",
 		search: &appSearch{scope: "trips:read", path: "/api/v1/trips", q: "q",
 			id: f("id"), title: f("name"), snippet: f("destination", "description"), date: f("start_date"), route: "/trips/{id}", kind: "trip"}},
@@ -109,6 +112,23 @@ func chatTitle(row map[string]any) string {
 		return ""
 	}
 	return who + " in " + where
+}
+
+// formsRoute: an answer opens in the Forms inbox (/answers/{id}), a form in
+// its editor (/forms/{id}).
+func formsRoute(row map[string]any) string {
+	if pick(row, f("kind")) == "response" {
+		return "/answers/{id}"
+	}
+	return "/forms/{id}"
+}
+
+// formsKind: "answer" or "form" on the card.
+func formsKind(row map[string]any) string {
+	if pick(row, f("kind")) == "response" {
+		return "answer"
+	}
+	return "form"
 }
 
 // noteMarkdown is a result kept as a note.

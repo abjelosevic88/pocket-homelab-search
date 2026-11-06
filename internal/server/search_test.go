@@ -709,3 +709,33 @@ func TestYourAppsChat(t *testing.T) {
 		t.Fatalf("item = %v", it)
 	}
 }
+
+// Pocket Forms' forms and answers: an answer reads "<who> — <form>" with its
+// line and opens in the Forms inbox (/answers/{id}), a form in Forms (/forms/{id}).
+func TestYourAppsForms(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"items":[{"kind":"form","id":2,"title":"Client brief","subtitle":"Form · 7 answers","url":"https://forms.example/forms/2"},{"kind":"response","id":41,"title":"Ana Kovač — Client brief","subtitle":"A new website for the bakery","date":"2026-11-07T09:12:00Z","url":"https://forms.example/answers/41"}],"forms":[{"id":2,"title":"Client brief"}],"responses":[{"id":41,"form":"Client brief"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"forms": map[string]any{"mode": "direct", "url": sib.URL, "token": "pfm_secret", "public": "https://forms.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=brief&app=forms", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 2 || !strings.Contains(gotQuery, "q=brief") || !strings.Contains(gotQuery, "limit=8") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	if it := items[0].(map[string]any); it["url"] != "https://forms.example/forms/2" || it["title"] != "Client brief" || it["kind"] != "form" || it["snippet"] != "Form · 7 answers" {
+		t.Fatalf("form = %v", it)
+	}
+	if it := items[1].(map[string]any); it["url"] != "https://forms.example/answers/41" || it["title"] != "Ana Kovač — Client brief" || it["kind"] != "answer" || it["date"] != "2026-11-07T09:12:00Z" || it["snippet"] != "A new website for the bakery" {
+		t.Fatalf("answer = %v", it)
+	}
+}
