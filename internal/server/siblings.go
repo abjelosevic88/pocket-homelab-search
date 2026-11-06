@@ -38,6 +38,8 @@ type appSearch struct {
 	id, title, snippet, date, link []string
 	route                          string // the item's page in the app: "/notes/{id}" ("" = the app's start page)
 	kind                           string // what a row is ("note", "task"…), shown on the card
+	// a title made of several fields (wins over title when it gives one)
+	titleOf func(row map[string]any) string
 }
 
 // appSend says how to send a result to one app.
@@ -370,6 +372,11 @@ func (s *Server) searchApp(ctx context.Context, u *store.User, st store.Settings
 	ql := strings.ToLower(q)
 	for _, row := range rowsOf(raw, a.search.list) {
 		it := appItem{Title: pick(row, a.search.title), Snippet: pick(row, a.search.snippet), Date: pick(row, a.search.date), Link: pick(row, a.search.link), Kind: a.search.kind}
+		if a.search.titleOf != nil {
+			if t := a.search.titleOf(row); t != "" {
+				it.Title = t
+			}
+		}
 		if it.Title == "" {
 			it.Title = it.Link
 		}

@@ -677,3 +677,35 @@ func TestYourAppsBlog(t *testing.T) {
 		t.Fatalf("item = %v", it)
 	}
 }
+
+// Pocket Chat's messages read "<who> in <conversation>" and open at the
+// message in its conversation (/c/{conversation_id}?m={id}).
+func TestYourAppsChat(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"query":"ferry","results":[{"id":"m41","conversation_id":"c7","kind":"text","body":"Let's take the early ferry to Hvar on Saturday","snippet":"…the early <b>ferry</b> to Hvar","author_name":"Ana","conversation_title":"Weekend plans","created_at":"2026-11-06T08:15:00Z"},{"id":"m42","conversation_id":"c8","kind":"text","body":"ferry tickets?","snippet":"<b>ferry</b> tickets?","author_name":"Marko","conversation_title":"","created_at":"2026-11-05T18:00:00Z"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"chat": map[string]any{"mode": "direct", "url": sib.URL, "token": "pcx_secret", "public": "https://chat.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=ferry&app=chat", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 2 || !strings.Contains(gotQuery, "q=ferry") || !strings.Contains(gotQuery, "limit=8") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	it := items[0].(map[string]any)
+	if it["url"] != "https://chat.example/c/c7?m=m41" || it["title"] != "Ana in Weekend plans" || it["kind"] != "message" || it["date"] != "2026-11-06T08:15:00Z" || it["snippet"] != "…the early ferry to Hvar" {
+		t.Fatalf("item = %v", it)
+	}
+	// no conversation title: the author alone
+	if it := items[1].(map[string]any); it["title"] != "Marko" || it["url"] != "https://chat.example/c/c8?m=m42" {
+		t.Fatalf("item = %v", it)
+	}
+}

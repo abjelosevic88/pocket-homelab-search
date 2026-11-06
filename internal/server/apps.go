@@ -88,6 +88,10 @@ var pocketApps = []pocketApp{
 	{slug: "blog", name: "Pocket Blog", bang: "blog", reason: "Search your blog posts (drafts too) beside the web",
 		search: &appSearch{scope: "blog:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
 			id: f("id"), title: f("title"), snippet: f("snippet"), date: f("date"), route: "/posts/{id}", kind: "post"}},
+	{slug: "chat", name: "Pocket Chat", bang: "chat", reason: "Search your chat messages beside the web",
+		search: &appSearch{scope: "chat:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
+			id: f("id"), title: f("conversation_title", "author_name"), titleOf: chatTitle, snippet: f("snippet", "body"), date: f("created_at"),
+			route: "/c/{conversation_id}?m={id}", kind: "message"}},
 	{slug: "travel", name: "Pocket Travel", bang: "trips", reason: "Search your trips beside the web",
 		search: &appSearch{scope: "trips:read", path: "/api/v1/trips", q: "q",
 			id: f("id"), title: f("name"), snippet: f("destination", "description"), date: f("start_date"), route: "/trips/{id}", kind: "trip"}},
@@ -97,6 +101,15 @@ var pocketApps = []pocketApp{
 }
 
 func f(names ...string) []string { return names }
+
+// chatTitle: "Ana in Weekend plans" (who wrote it, in which conversation).
+func chatTitle(row map[string]any) string {
+	who, where := pick(row, f("author_name")), pick(row, f("conversation_title"))
+	if who == "" || where == "" {
+		return ""
+	}
+	return who + " in " + where
+}
 
 // noteMarkdown is a result kept as a note.
 func noteMarkdown(in sendIn) string {
