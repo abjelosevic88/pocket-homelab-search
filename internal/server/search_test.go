@@ -841,3 +841,56 @@ func TestYourAppsLeagueOff(t *testing.T) {
 		t.Fatalf("section = %v", sec)
 	}
 }
+
+// Pocket Tables: tables whose name matches come first and open at /t/{id};
+// rows open at /r/{id} and read "<table> in <base> · <field>: <snippet>".
+func TestYourAppsTables(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"query":"client","items":[{"id":12,"title":"Ana Marić","table_id":3,"table":"Clients","table_icon":"👥","base":"Bakery","field":"Notes","snippet":"…our best client since 2024…","url":"https://tables.example/r/12","updated_at":"2026-11-07T09:12:00Z"},{"id":13,"title":"Client list","table_id":3,"table":"Clients","base":"Clients","url":"https://tables.example/r/13"}],"tables":[{"id":3,"name":"Clients","icon":"👥","base":"Bakery","rows":12,"url":"https://tables.example/t/3"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"tables": map[string]any{"mode": "direct", "url": sib.URL, "token": "ptb_secret", "public": "https://tables.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=client&app=tables", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 3 || !strings.Contains(gotQuery, "q=client") || !strings.Contains(gotQuery, "limit=8") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	if it := items[0].(map[string]any); it["url"] != "https://tables.example/t/3" || it["title"] != "Clients" || it["kind"] != "table" || it["snippet"] != "In Bakery · 12 rows" {
+		t.Fatalf("table = %v", it)
+	}
+	if it := items[1].(map[string]any); it["url"] != "https://tables.example/r/12" || it["title"] != "Ana Marić" || it["kind"] != "row" || it["snippet"] != "Clients in Bakery · Notes: …our best client since 2024…" || it["date"] != "2026-11-07T09:12:00Z" {
+		t.Fatalf("row = %v", it)
+	}
+	if it := items[2].(map[string]any); it["snippet"] != "Clients" || it["url"] != "https://tables.example/r/13" {
+		t.Fatalf("name match = %v", it)
+	}
+	// !tables and !table both search it
+	found := map[string]bool{}
+	for _, b := range appBangs() {
+		if b.Trigger == "tables" || b.Trigger == "table" {
+			found[b.Trigger] = b.URL == "/search?cat=apps&app=tables&q={q}"
+		}
+	}
+	if !found["tables"] || !found["table"] {
+		t.Fatalf("bangs = %v", found)
+	}
+}
+
+// Pocket Tables not connected: its section says so and the rest of the search goes on.
+func TestYourAppsTablesOff(t *testing.T) {
+	a := newApp(t)
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=client&app=tables", nil)
+	sec := m["sections"].([]any)[0].(map[string]any)
+	if sec["app"] != "tables" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
+		t.Fatalf("section = %v", sec)
+	}
+}

@@ -103,6 +103,9 @@ var pocketApps = []pocketApp{
 	{slug: "league", name: "Pocket League", bang: "league", aliases: []string{"sport", "sports"}, reason: "Search your sport groups, games, players and the groups' chat beside the web",
 		search: &appSearch{scope: "league:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
 			id: f("id"), title: f("title"), snippet: f("subtitle"), date: f("at"), routeOf: leagueRoute, kindOf: leagueKind, kind: "game"}},
+	{slug: "tables", name: "Pocket Tables", bang: "tables", aliases: []string{"table"}, reason: "Search the rows and tables in your own small databases beside the web",
+		search: &appSearch{scope: "tables:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, rowsOf: tablesRows,
+			id: f("id"), title: f("title", "name"), snippetOf: tablesLine, date: f("updated_at"), routeOf: tablesRoute, kindOf: tablesKind, kind: "row"}},
 	{slug: "travel", name: "Pocket Travel", bang: "trips", reason: "Search your trips beside the web",
 		search: &appSearch{scope: "trips:read", path: "/api/v1/trips", q: "q",
 			id: f("id"), title: f("name"), snippet: f("destination", "description"), date: f("start_date"), route: "/trips/{id}", kind: "trip"}},
@@ -161,6 +164,68 @@ func leagueKind(row map[string]any) string {
 		return k
 	}
 	return ""
+}
+
+// tablesRows: the tables whose name matches first, then the rows (Pocket
+// Tables answers {items: rows, tables}); a table is marked "_table".
+func tablesRows(raw any) []map[string]any {
+	var out []map[string]any
+	for _, t := range rowsOf(raw, "tables") {
+		t["_table"] = true
+		out = append(out, t)
+	}
+	return append(out, rowsOf(raw, "items")...)
+}
+
+// tablesRoute: a row opens at /r/{id}, a table at /t/{id}.
+func tablesRoute(row map[string]any) string {
+	if row["_table"] == true {
+		return "/t/{id}"
+	}
+	return "/r/{id}"
+}
+
+// tablesKind: "table" or "row" on the card.
+func tablesKind(row map[string]any) string {
+	if row["_table"] == true {
+		return "table"
+	}
+	return "row"
+}
+
+// tablesLine: a row reads "Clients in CRM · Email: ana@pekara.ba" (its table,
+// its base and the field that matched); a table "In CRM · 12 rows".
+func tablesLine(row map[string]any) string {
+	base := pick(row, f("base"))
+	if row["_table"] == true {
+		var parts []string
+		if base != "" {
+			parts = append(parts, "In "+base)
+		}
+		if n, ok := row["rows"].(float64); ok {
+			if n == 1 {
+				parts = append(parts, "1 row")
+			} else {
+				parts = append(parts, fmt.Sprintf("%.0f rows", n))
+			}
+		}
+		return strings.Join(parts, " · ")
+	}
+	where := pick(row, f("table"))
+	if where != "" && base != "" && base != where {
+		where += " in " + base
+	}
+	match := pick(row, f("snippet"))
+	if fl := pick(row, f("field")); fl != "" && match != "" {
+		match = fl + ": " + match
+	}
+	var parts []string
+	for _, p := range []string{where, match} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return strings.Join(parts, " · ")
 }
 
 // crmLine: "Proposal sent · 4,500 EUR · Ana Marić (Pekara Marić)" — the

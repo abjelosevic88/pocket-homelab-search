@@ -45,6 +45,8 @@ type appSearch struct {
 	routeOf, kindOf func(row map[string]any) string
 	// a line made of several fields (wins over snippet when it gives one)
 	snippetOf func(row map[string]any) string
+	// rows gathered from more than one list in the answer (wins over list)
+	rowsOf func(raw any) []map[string]any
 }
 
 // appSend says how to send a result to one app.
@@ -376,7 +378,11 @@ func (s *Server) searchApp(ctx context.Context, u *store.User, st store.Settings
 		return sec
 	}
 	ql := strings.ToLower(q)
-	for _, row := range rowsOf(raw, a.search.list) {
+	rows := rowsOf(raw, a.search.list)
+	if a.search.rowsOf != nil {
+		rows = a.search.rowsOf(raw)
+	}
+	for _, row := range rows {
 		it := appItem{Title: pick(row, a.search.title), Snippet: pick(row, a.search.snippet), Date: pick(row, a.search.date), Link: pick(row, a.search.link), Kind: a.search.kind}
 		if a.search.titleOf != nil {
 			if t := a.search.titleOf(row); t != "" {
