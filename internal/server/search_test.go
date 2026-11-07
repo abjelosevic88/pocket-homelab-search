@@ -977,7 +977,7 @@ func TestYourAppsTrails(t *testing.T) {
 		{"route", "https://trails.example/routes/4", "Hike · 12.4 km · 980 m up · 4 h 30 min", ""},
 		{"outing", "https://trails.example/outings/12", "Sat 14 Nov · planned", "2026-11-14"},
 		{"gear", "https://trails.example/gear", "Gear · 80 g", ""},
-		{"spot", "https://trails.example/", "Hut on a route", ""}, // no path: its route is not known
+		{"spot", "https://trails.example/", "Hut on a route", ""},               // no path: its route is not known
 		{"outing", "https://trails.example/outings/13", "Sun 1 Nov · done", ""}, // no path: from its type
 	}
 	for i, w := range want {
