@@ -61,6 +61,7 @@ type appSend struct {
 // pocketApp is one sibling Pocket app Search acts in.
 type pocketApp struct {
 	slug, name, bang string
+	aliases          []string // more bangs for the same app ("!sport" for Pocket League)
 	reason           string
 	search           *appSearch
 	send             *appSend

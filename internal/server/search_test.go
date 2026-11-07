@@ -454,6 +454,12 @@ func TestEnginePickAndAppsTable(t *testing.T) {
 			t.Fatalf("app %s bang %q missing or clashes with a built-in one", a.slug, a.bang)
 		}
 		bangs[a.bang] = true
+		for _, al := range a.aliases {
+			if bangs[al] || !reBangWord.MatchString("!"+al) {
+				t.Fatalf("app %s alias %q clashes or is not a bang", a.slug, al)
+			}
+			bangs[al] = true
+		}
 		for _, sc := range a.scopes() {
 			if sc == "" {
 				t.Fatalf("app %s has an empty scope", a.slug)
@@ -779,6 +785,59 @@ func TestYourAppsCRMOff(t *testing.T) {
 	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=cake&app=crm", nil)
 	sec := m["sections"].([]any)[0].(map[string]any)
 	if sec["app"] != "crm" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
+		t.Fatalf("section = %v", sec)
+	}
+}
+
+// Pocket League: groups, games, players and chat lines, each opening its own
+// page in Pocket League; !league, !sport and !sports all search it.
+func TestYourAppsLeague(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"results":[{"kind":"group","id":1,"title":"Tuesday Tennis","subtitle":"Tennis · 6 people","emoji":"🎾","url":"https://league.example/groups/1","path":"/groups/1"},{"kind":"game","id":31,"title":"Tennis · Tuesday Tennis","subtitle":"Tue 10 Nov, 20:00 · TK Koševo","emoji":"🎾","url":"https://league.example/games/31","path":"/games/31","at":"2026-11-10T20:00"},{"kind":"player","id":2,"title":"Marko Petrović","subtitle":"plays in Tuesday Tennis","emoji":"🎾","url":"https://league.example/groups/1/players/2","path":"/groups/1/players/2"},{"kind":"message","id":7,"title":"Tennis on Tuesday, who's bringing balls?","subtitle":"Marko Petrović in Tuesday Tennis","emoji":"🎾","url":"https://league.example/groups/1?tab=chat","path":"/groups/1?tab=chat","at":"2026-11-06T18:00:00Z"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"league": map[string]any{"mode": "direct", "url": sib.URL, "token": "plg_secret", "public": "https://league.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=tennis&app=league", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 4 || !strings.Contains(gotQuery, "q=tennis") || !strings.Contains(gotQuery, "limit=8") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	want := []struct{ kind, url, snippet string }{
+		{"group", "https://league.example/groups/1", "Tennis · 6 people"},
+		{"game", "https://league.example/games/31", "Tue 10 Nov, 20:00 · TK Koševo"},
+		{"player", "https://league.example/groups/1/players/2", "plays in Tuesday Tennis"},
+		{"message", "https://league.example/groups/1?tab=chat", "Marko Petrović in Tuesday Tennis"},
+	}
+	for i, w := range want {
+		if it := items[i].(map[string]any); it["kind"] != w.kind || it["url"] != w.url || it["snippet"] != w.snippet {
+			t.Fatalf("item %d = %v, want %+v", i, it, w)
+		}
+	}
+	if it := items[1].(map[string]any); it["date"] != "2026-11-10T20:00" || it["title"] != "Tennis · Tuesday Tennis" {
+		t.Fatalf("game = %v", it)
+	}
+	for _, b := range []string{"!league tennis", "!sport tennis", "tennis !sports"} {
+		if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape(b), nil); m["redirect"] != "/search?cat=apps&app=league&q=tennis" {
+			t.Fatalf("%s → %v", b, m["redirect"])
+		}
+	}
+}
+
+// Pocket League not connected: its section says so and the rest of the search goes on.
+func TestYourAppsLeagueOff(t *testing.T) {
+	a := newApp(t)
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=tennis&app=league", nil)
+	sec := m["sections"].([]any)[0].(map[string]any)
+	if sec["app"] != "league" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
 		t.Fatalf("section = %v", sec)
 	}
 }

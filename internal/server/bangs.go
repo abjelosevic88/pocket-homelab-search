@@ -115,7 +115,9 @@ func appBangs() []bang {
 	out := []bang{}
 	for _, a := range pocketApps {
 		if a.search != nil {
-			out = append(out, bang{Trigger: a.bang, Name: a.name, URL: "/search?cat=apps&app=" + a.slug + "&q={q}", Home: "/search?cat=apps&app=" + a.slug, Group: "Your Pocket apps"})
+			for _, t := range append([]string{a.bang}, a.aliases...) {
+				out = append(out, bang{Trigger: t, Name: a.name, URL: "/search?cat=apps&app=" + a.slug + "&q={q}", Home: "/search?cat=apps&app=" + a.slug, Group: "Your Pocket apps"})
+			}
 		}
 	}
 	return out

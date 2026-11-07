@@ -100,6 +100,9 @@ var pocketApps = []pocketApp{
 		search: &appSearch{scope: "crm:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "deals",
 			id: f("id"), title: f("title"), snippet: f("company", "contact_name", "next_action"), snippetOf: crmLine, date: f("updated_at"),
 			route: "/deals/{id}", kind: "deal"}},
+	{slug: "league", name: "Pocket League", bang: "league", aliases: []string{"sport", "sports"}, reason: "Search your sport groups, games, players and the groups' chat beside the web",
+		search: &appSearch{scope: "league:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
+			id: f("id"), title: f("title"), snippet: f("subtitle"), date: f("at"), routeOf: leagueRoute, kindOf: leagueKind, kind: "game"}},
 	{slug: "travel", name: "Pocket Travel", bang: "trips", reason: "Search your trips beside the web",
 		search: &appSearch{scope: "trips:read", path: "/api/v1/trips", q: "q",
 			id: f("id"), title: f("name"), snippet: f("destination", "description"), date: f("start_date"), route: "/trips/{id}", kind: "trip"}},
@@ -134,6 +137,30 @@ func formsKind(row map[string]any) string {
 		return "answer"
 	}
 	return "form"
+}
+
+// leagueRoute: the row's own page in Pocket League ("/groups/1", "/games/31",
+// "/groups/1/players/2", "/groups/1?tab=chat"), else its kind's page.
+func leagueRoute(row map[string]any) string {
+	if p := pick(row, f("path")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
+		return p
+	}
+	switch pick(row, f("kind")) {
+	case "group":
+		return "/groups/{id}"
+	case "game":
+		return "/games/{id}"
+	}
+	return "/"
+}
+
+// leagueKind: "group", "game", "player" or "message" on the card.
+func leagueKind(row map[string]any) string {
+	switch k := pick(row, f("kind")); k {
+	case "group", "game", "player", "message":
+		return k
+	}
+	return ""
 }
 
 // crmLine: "Proposal sent · 4,500 EUR · Ana Marić (Pekara Marić)" — the
