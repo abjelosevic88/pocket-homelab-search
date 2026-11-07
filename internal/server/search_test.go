@@ -894,3 +894,59 @@ func TestYourAppsTablesOff(t *testing.T) {
 		t.Fatalf("section = %v", sec)
 	}
 }
+
+// Pocket Rentals: places, leases, tenants and repairs each open their own page
+// in Pocket Rentals and read Rentals' subtitle.
+func TestYourAppsRentals(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"results":[{"kind":"property","id":2,"title":"Obala 12","subtitle":"Obala Kulina bana 12, Sarajevo · 2 of 3 let","url":"https://rentals.example/properties/2","path":"/properties/2"},{"kind":"lease","id":3,"title":"Flat 2 — Ana Marić","subtitle":"active · €650.00 monthly · owes €500.00","url":"https://rentals.example/leases/3","path":"/leases/3"},{"kind":"tenant","id":5,"title":"Ana Marić","subtitle":"ana@example.org · +387 61 000 000","url":"https://rentals.example/tenants/5","path":"/tenants/5"},{"kind":"repair","id":9,"title":"Leaking tap","subtitle":"Flat 1, Obala 12 · in progress","url":"https://rentals.example/repairs/9"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"rentals": map[string]any{"mode": "direct", "url": sib.URL, "token": "prt_secret", "public": "https://rentals.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=obala&app=rentals", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 4 || !strings.Contains(gotQuery, "q=obala") || !strings.Contains(gotQuery, "limit=8") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	want := []struct{ kind, url, snippet string }{
+		{"property", "https://rentals.example/properties/2", "Obala Kulina bana 12, Sarajevo · 2 of 3 let"},
+		{"lease", "https://rentals.example/leases/3", "active · €650.00 monthly · owes €500.00"},
+		{"tenant", "https://rentals.example/tenants/5", "ana@example.org · +387 61 000 000"},
+		{"repair", "https://rentals.example/repairs/9", "Flat 1, Obala 12 · in progress"}, // no path: from its kind
+	}
+	for i, w := range want {
+		it := items[i].(map[string]any)
+		if it["kind"] != w.kind || it["url"] != w.url || it["snippet"] != w.snippet {
+			t.Errorf("item %d = %v", i, it)
+		}
+	}
+	// !rentals and !rent both search it
+	found := map[string]bool{}
+	for _, b := range appBangs() {
+		if b.Trigger == "rentals" || b.Trigger == "rent" {
+			found[b.Trigger] = b.URL == "/search?cat=apps&app=rentals&q={q}"
+		}
+	}
+	if !found["rentals"] || !found["rent"] {
+		t.Fatalf("bangs = %v", found)
+	}
+}
+
+// Pocket Rentals not connected: its section says so and the rest of the search goes on.
+func TestYourAppsRentalsOff(t *testing.T) {
+	a := newApp(t)
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=obala&app=rentals", nil)
+	sec := m["sections"].([]any)[0].(map[string]any)
+	if sec["app"] != "rentals" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
+		t.Fatalf("section = %v", sec)
+	}
+}

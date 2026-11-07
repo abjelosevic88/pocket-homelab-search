@@ -106,6 +106,9 @@ var pocketApps = []pocketApp{
 	{slug: "tables", name: "Pocket Tables", bang: "tables", aliases: []string{"table"}, reason: "Search the rows and tables in your own small databases beside the web",
 		search: &appSearch{scope: "tables:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, rowsOf: tablesRows,
 			id: f("id"), title: f("title", "name"), snippetOf: tablesLine, date: f("updated_at"), routeOf: tablesRoute, kindOf: tablesKind, kind: "row"}},
+	{slug: "rentals", name: "Pocket Rentals", bang: "rentals", aliases: []string{"rent"}, reason: "Search the homes you rent out — places, leases, tenants and repairs — beside the web",
+		search: &appSearch{scope: "rentals:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
+			id: f("id"), title: f("title"), snippet: f("subtitle"), routeOf: rentalsRoute, kindOf: rentalsKind, kind: "lease"}},
 	{slug: "travel", name: "Pocket Travel", bang: "trips", reason: "Search your trips beside the web",
 		search: &appSearch{scope: "trips:read", path: "/api/v1/trips", q: "q",
 			id: f("id"), title: f("name"), snippet: f("destination", "description"), date: f("start_date"), route: "/trips/{id}", kind: "trip"}},
@@ -161,6 +164,34 @@ func leagueRoute(row map[string]any) string {
 func leagueKind(row map[string]any) string {
 	switch k := pick(row, f("kind")); k {
 	case "group", "game", "player", "message":
+		return k
+	}
+	return ""
+}
+
+// rentalsRoute: the row's own page in Pocket Rentals ("/properties/2",
+// "/leases/3", "/tenants/5", "/repairs/9"), from its path or its kind.
+func rentalsRoute(row map[string]any) string {
+	if p := pick(row, f("path")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
+		return p
+	}
+	switch pick(row, f("kind")) {
+	case "property":
+		return "/properties/{id}"
+	case "lease":
+		return "/leases/{id}"
+	case "tenant":
+		return "/tenants/{id}"
+	case "repair":
+		return "/repairs/{id}"
+	}
+	return "/"
+}
+
+// rentalsKind: "property", "lease", "tenant" or "repair" on the card.
+func rentalsKind(row map[string]any) string {
+	switch k := pick(row, f("kind")); k {
+	case "property", "lease", "tenant", "repair":
 		return k
 	}
 	return ""
