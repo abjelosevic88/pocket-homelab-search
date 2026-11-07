@@ -739,3 +739,46 @@ func TestYourAppsForms(t *testing.T) {
 		t.Fatalf("answer = %v", it)
 	}
 }
+
+// Pocket CRM's deals: a deal reads its title with "<stage> · <amount> · <who>
+// (<company>)" and opens in Pocket CRM (/deals/{id}).
+func TestYourAppsCRM(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"deals":[{"id":4,"title":"Online shop for cakes","stage_name":"Proposal sent","status":"open","value":450000,"amount":4500,"currency":"EUR","contact_name":"Ana Marić","company":"Pekara Marić","next_action":"Call back","next_due":"2026-11-09","updated_at":"2026-11-07T09:12:00Z","url":"https://crm.example/deals/4"},{"id":9,"title":"Cake stand","stage_name":"Won","status":"won","amount":1234.5,"currency":"BAM","contact_name":"","company":"Pekara Marić","url":"https://crm.example/deals/9"},{"id":10,"title":"Bare deal","stage_name":"Lead","status":"open","amount":0,"currency":"EUR","url":"https://crm.example/deals/10"}],"total":3}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"crm": map[string]any{"mode": "direct", "url": sib.URL, "token": "pcr_secret", "public": "https://crm.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=cake&app=crm", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 3 || !strings.Contains(gotQuery, "q=cake") || !strings.Contains(gotQuery, "limit=8") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	if it := items[0].(map[string]any); it["url"] != "https://crm.example/deals/4" || it["title"] != "Online shop for cakes" || it["kind"] != "deal" || it["snippet"] != "Proposal sent · 4,500 EUR · Ana Marić (Pekara Marić)" || it["date"] != "2026-11-07T09:12:00Z" {
+		t.Fatalf("deal = %v", it)
+	}
+	if it := items[1].(map[string]any); it["snippet"] != "Won · 1,234.50 BAM · Pekara Marić" || it["url"] != "https://crm.example/deals/9" {
+		t.Fatalf("won deal = %v", it)
+	}
+	if it := items[2].(map[string]any); it["snippet"] != "Lead" {
+		t.Fatalf("bare deal = %v", it)
+	}
+}
+
+// Pocket CRM not connected: its section says so and the rest of the search goes on.
+func TestYourAppsCRMOff(t *testing.T) {
+	a := newApp(t)
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=cake&app=crm", nil)
+	sec := m["sections"].([]any)[0].(map[string]any)
+	if sec["app"] != "crm" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
+		t.Fatalf("section = %v", sec)
+	}
+}

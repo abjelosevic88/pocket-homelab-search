@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 )
@@ -95,6 +96,10 @@ var pocketApps = []pocketApp{
 	{slug: "forms", name: "Pocket Forms", bang: "forms", reason: "Search your forms and the answers people sent beside the web",
 		search: &appSearch{scope: "forms:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "items",
 			id: f("id"), title: f("title"), snippet: f("subtitle"), date: f("date"), routeOf: formsRoute, kindOf: formsKind, kind: "form"}},
+	{slug: "crm", name: "Pocket CRM", bang: "crm", reason: "Search your deals beside the web",
+		search: &appSearch{scope: "crm:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "deals",
+			id: f("id"), title: f("title"), snippet: f("company", "contact_name", "next_action"), snippetOf: crmLine, date: f("updated_at"),
+			route: "/deals/{id}", kind: "deal"}},
 	{slug: "travel", name: "Pocket Travel", bang: "trips", reason: "Search your trips beside the web",
 		search: &appSearch{scope: "trips:read", path: "/api/v1/trips", q: "q",
 			id: f("id"), title: f("name"), snippet: f("destination", "description"), date: f("start_date"), route: "/trips/{id}", kind: "trip"}},
@@ -129,6 +134,61 @@ func formsKind(row map[string]any) string {
 		return "answer"
 	}
 	return "form"
+}
+
+// crmLine: "Proposal sent · 4,500 EUR · Ana Marić (Pekara Marić)" — the
+// deal's stage (or won/lost), its amount and who it is with.
+func crmLine(row map[string]any) string {
+	stage := pick(row, f("stage_name"))
+	if st := pick(row, f("status")); st == "won" || st == "lost" {
+		stage = strings.ToUpper(st[:1]) + st[1:]
+	}
+	money := ""
+	if v, ok := row["amount"].(float64); ok && v != 0 {
+		money = groupThousands(v)
+		if c := pick(row, f("currency")); c != "" {
+			money += " " + c
+		}
+	}
+	who, co := pick(row, f("contact_name")), pick(row, f("company"))
+	switch {
+	case who != "" && co != "" && who != co:
+		who += " (" + co + ")"
+	case who == "":
+		who = co
+	}
+	var parts []string
+	for _, p := range []string{stage, money, who} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// groupThousands: 4500 → "4,500", 1234.5 → "1,234.50".
+func groupThousands(v float64) string {
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	s := fmt.Sprintf("%.2f", v)
+	whole, frac := s[:len(s)-3], s[len(s)-2:]
+	var b strings.Builder
+	for i, r := range whole {
+		if i > 0 && (len(whole)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	out := b.String()
+	if frac != "00" {
+		out += "." + frac
+	}
+	if neg {
+		out = "-" + out
+	}
+	return out
 }
 
 // noteMarkdown is a result kept as a note.

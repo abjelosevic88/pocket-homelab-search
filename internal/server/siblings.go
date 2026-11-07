@@ -43,6 +43,8 @@ type appSearch struct {
 	// rows of more than one kind: each row's page in the app and what it is
 	// (win over route and kind when they give one)
 	routeOf, kindOf func(row map[string]any) string
+	// a line made of several fields (wins over snippet when it gives one)
+	snippetOf func(row map[string]any) string
 }
 
 // appSend says how to send a result to one app.
@@ -383,6 +385,11 @@ func (s *Server) searchApp(ctx context.Context, u *store.User, st store.Settings
 		if a.search.kindOf != nil {
 			if k := a.search.kindOf(row); k != "" {
 				it.Kind = k
+			}
+		}
+		if a.search.snippetOf != nil {
+			if sn := a.search.snippetOf(row); sn != "" {
+				it.Snippet = sn
 			}
 		}
 		if it.Title == "" {
