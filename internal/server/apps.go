@@ -109,6 +109,9 @@ var pocketApps = []pocketApp{
 	{slug: "rentals", name: "Pocket Rentals", bang: "rentals", aliases: []string{"rent"}, reason: "Search the homes you rent out — places, leases, tenants and repairs — beside the web",
 		search: &appSearch{scope: "rentals:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
 			id: f("id"), title: f("title"), snippet: f("subtitle"), routeOf: rentalsRoute, kindOf: rentalsKind, kind: "lease"}},
+	{slug: "trails", name: "Pocket Trails", bang: "trails", aliases: []string{"hike"}, reason: "Search your hikes, walks, runs and rides — routes, outings, gear and the spots along the way — beside the web",
+		search: &appSearch{scope: "trails:read", path: "/api/v1/search", q: "q", list: "results",
+			id: f("id"), title: f("title"), snippet: f("subtitle"), date: f("date"), routeOf: trailsRoute, kindOf: trailsKind, kind: "route"}},
 	{slug: "travel", name: "Pocket Travel", bang: "trips", reason: "Search your trips beside the web",
 		search: &appSearch{scope: "trips:read", path: "/api/v1/trips", q: "q",
 			id: f("id"), title: f("name"), snippet: f("destination", "description"), date: f("start_date"), route: "/trips/{id}", kind: "trip"}},
@@ -192,6 +195,33 @@ func rentalsRoute(row map[string]any) string {
 func rentalsKind(row map[string]any) string {
 	switch k := pick(row, f("kind")); k {
 	case "property", "lease", "tenant", "repair":
+		return k
+	}
+	return ""
+}
+
+// trailsRoute: the row's own page in Pocket Trails ("/routes/4",
+// "/outings/12"; a spot opens its route, gear the gear page), from its path
+// or its type.
+func trailsRoute(row map[string]any) string {
+	if p := pick(row, f("path")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
+		return p
+	}
+	switch pick(row, f("type")) {
+	case "route":
+		return "/routes/{id}"
+	case "outing":
+		return "/outings/{id}"
+	case "gear":
+		return "/gear"
+	}
+	return "/"
+}
+
+// trailsKind: "route", "outing", "gear" or "spot" on the card.
+func trailsKind(row map[string]any) string {
+	switch k := pick(row, f("type")); k {
+	case "route", "outing", "gear", "spot":
 		return k
 	}
 	return ""

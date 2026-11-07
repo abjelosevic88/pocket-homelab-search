@@ -950,3 +950,60 @@ func TestYourAppsRentalsOff(t *testing.T) {
 		t.Fatalf("section = %v", sec)
 	}
 }
+
+// Pocket Trails: routes, outings, gear and spots each open their page in
+// Pocket Trails (a spot its route) and read Trails' subtitle.
+func TestYourAppsTrails(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"results":[{"type":"route","id":4,"title":"Trebević from Sarajevo","subtitle":"Hike · 12.4 km · 980 m up · 4 h 30 min","path":"/routes/4","url":"https://trails.example/routes/4"},{"type":"outing","id":12,"title":"Hike: Trebević from Sarajevo","subtitle":"Sat 14 Nov · planned","date":"2026-11-14","path":"/outings/12","url":"https://trails.example/outings/12"},{"type":"gear","id":3,"title":"Trebević map","subtitle":"Gear · 80 g","path":"/gear","url":"https://trails.example/gear"},{"type":"spot","id":7,"title":"Trebević hut","subtitle":"Hut on a route"},{"type":"outing","id":13,"title":"Run by the river","subtitle":"Sun 1 Nov · done"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"trails": map[string]any{"mode": "direct", "url": sib.URL, "token": "ptr_secret", "public": "https://trails.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=trebevic&app=trails", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 5 || !strings.Contains(gotQuery, "q=trebevic") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	want := []struct{ kind, url, snippet, date string }{
+		{"route", "https://trails.example/routes/4", "Hike · 12.4 km · 980 m up · 4 h 30 min", ""},
+		{"outing", "https://trails.example/outings/12", "Sat 14 Nov · planned", "2026-11-14"},
+		{"gear", "https://trails.example/gear", "Gear · 80 g", ""},
+		{"spot", "https://trails.example/", "Hut on a route", ""}, // no path: its route is not known
+		{"outing", "https://trails.example/outings/13", "Sun 1 Nov · done", ""}, // no path: from its type
+	}
+	for i, w := range want {
+		it := items[i].(map[string]any)
+		if it["kind"] != w.kind || it["url"] != w.url || it["snippet"] != w.snippet || (w.date != "" && it["date"] != w.date) {
+			t.Errorf("item %d = %v", i, it)
+		}
+	}
+	// !trails and !hike both search it
+	found := map[string]bool{}
+	for _, b := range appBangs() {
+		if b.Trigger == "trails" || b.Trigger == "hike" {
+			found[b.Trigger] = b.URL == "/search?cat=apps&app=trails&q={q}"
+		}
+	}
+	if !found["trails"] || !found["hike"] {
+		t.Fatalf("bangs = %v", found)
+	}
+}
+
+// Pocket Trails not connected: its section says so and the rest of the search goes on.
+func TestYourAppsTrailsOff(t *testing.T) {
+	a := newApp(t)
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=trebevic&app=trails", nil)
+	sec := m["sections"].([]any)[0].(map[string]any)
+	if sec["app"] != "trails" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
+		t.Fatalf("section = %v", sec)
+	}
+}
