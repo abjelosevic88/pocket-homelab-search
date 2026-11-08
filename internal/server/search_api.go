@@ -57,6 +57,7 @@ type searchOut struct {
 	MS           int64                 `json:"ms"`
 	Redirect     string                `json:"redirect,omitempty"` // a bang: go here instead
 	Instant      *instant.Answer       `json:"instant,omitempty"`  // worked out on the server: a sum, the weather…
+	Pending      bool                  `json:"pending,omitempty"`  // slower engines are still answering: ask again with full=1
 }
 
 // domainOf is a result's site without "www.".
@@ -186,82 +187,51 @@ func (s *Server) remember(key string, out *searchOut) {
 	s.results[key] = cachedSearch{out, time.Now()}
 }
 
-// search runs one search for a person with their settings and rules.
-func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q, cat, tr, lang string, page int, lens *store.Lens) (*searchOut, error) {
+// search runs one search for a person with their settings and rules: with
+// full, once every engine has answered; without, as soon as the first one has
+// (Pending then says more is on its way: ask again with full).
+func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q, cat, tr, lang string, page int, lens *store.Lens, full bool) (*searchOut, error) {
 	lensKey := ""
 	if lens != nil {
 		lensKey = fmt.Sprintf("%d@%s", lens.ID, lens.UpdatedAt)
 	}
 	key := searchKey(u.ID, q, cat, tr+"\x00"+lang+"\x00"+lensKey, page)
-	if c := s.cached(key); c != nil {
-		cp := *c
-		cp.Results = append([]hit(nil), c.Results...)
-		s.attachSaves(ctx, u.ID, cp.Results)
-		return &cp, nil
-	}
-	if !s.engine.Configured() {
-		return nil, engine.ErrNotConfigured
-	}
-	// the same search already on its way (a tab hovered, then clicked): wait for that one
-	s.resMu.Lock()
-	if wait, ok := s.inflight[key]; ok {
+	out := s.cached(key)
+	if out == nil {
+		if !s.engine.Configured() {
+			return nil, engine.ErrNotConfigured
+		}
+		// the same search already on its way (a tab hovered, then clicked): wait for that one
+		s.resMu.Lock()
+		job, ok := s.inflight[key]
+		if !ok {
+			job = &searchJob{early: make(chan struct{}), done: make(chan struct{})}
+			s.inflight[key] = job
+			go s.runSearch(job, key, u.ID, st, q, cat, tr, lang, page, lens)
+		}
 		s.resMu.Unlock()
+		wait := job.early
+		if full {
+			wait = job.done
+		}
 		select {
 		case <-wait:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		return s.search(ctx, u, st, q, cat, tr, lang, page, lens)
-	}
-	done := make(chan struct{})
-	s.inflight[key] = done
-	s.resMu.Unlock()
-	defer func() {
-		s.resMu.Lock()
-		delete(s.inflight, key)
-		s.resMu.Unlock()
-		close(done)
-	}()
-	if lang == "" && lens != nil && lens.Language != "" {
-		lang = lens.Language
-	}
-	if lang == "" {
-		lang = st.Language
-	}
-	query := engine.Query{Q: lensQuery(q, lens), Category: cat, Page: page, TimeRange: tr, Language: lang, SafeSearch: st.SafeSearch}
-	if len(st.EnginesOff)+len(st.EnginesOn) > 0 {
-		if all, err := s.engineList(ctx); err == nil {
-			if picked := engine.Pick(all, cat, st.EnginesOff, st.EnginesOn); picked != nil {
-				if len(picked) == 0 {
-					return nil, errors.New("every search engine for " + strings.ToLower(categories[cat]) + " is switched off (Settings → Engines)")
-				}
-				query.Engines = picked
-			}
+		if job.err != nil {
+			return nil, job.err
+		}
+		out = job.first
+		if full && job.final != nil {
+			out = job.final
+		}
+		if out == nil {
+			return nil, errors.New("the search engine did not answer")
 		}
 	}
-	start := time.Now()
-	ectx, cancel := context.WithTimeout(ctx, s.cfg.EngineTimeout+3*time.Second)
-	defer cancel()
-	res, err := s.engine.Search(ectx, query)
-	searchesRun.Add(1)
-	if err != nil {
-		return nil, err
-	}
-	rules, _ := s.store.ListRules(ctx, u.ID)
-	hits, hidden, hiddenSites, ruleHits := applyRules(res.Results, lensRules(rules, lens))
-	hits = onlySites(hits, lens)
-	if len(ruleHits) > 0 {
-		s.store.CountRuleHits(ctx, u.ID, ruleHits)
-	}
-	out := &searchOut{Query: q, Category: cat, Page: page, Time: tr, Results: hits, Answers: res.Answers, Infoboxes: res.Infoboxes,
-		Suggestions: res.Suggestions, Corrections: res.Corrections, Unresponsive: res.Unresponsive, Hidden: hidden, HiddenSites: hiddenSites,
-		More: len(res.Results) >= 8 && page < 20, Engine: s.engineName(), MS: time.Since(start).Milliseconds()}
-	if page > 1 {
-		out.Infoboxes = []engine.Infobox{}
-	}
-	s.remember(key, out)
 	cp := *out
-	cp.Results = append([]hit(nil), out.Results...)
+	cp.Results = append(make([]hit, 0, len(out.Results)), out.Results...)
 	s.attachSaves(ctx, u.ID, cp.Results)
 	return &cp, nil
 }
@@ -336,19 +306,22 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		lens = l
 	}
+	// full=1: the rest of a search whose first answer is already shown; other
+	// apps and assistants always get every engine's answer at once
+	full := queryBool(r, "full") || linkApp(ctx) != "" || r.URL.Query().Get("terms") != ""
 	// instant answers (a sum, a conversion, the weather…) are worked out
 	// while the engines search
 	var inst *instant.Answer
 	instDone := make(chan struct{})
 	go func() {
 		defer close(instDone)
-		if page == 1 && cat == "general" && lens == nil {
+		if page == 1 && cat == "general" && lens == nil && !full {
 			ictx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 			inst = s.instantAnswer(ictx, u, st, q)
 		}
 	}()
-	out, err := s.search(ctx, u, st, q, cat, tr, r.URL.Query().Get("lang"), page, lens)
+	out, err := s.search(ctx, u, st, q, cat, tr, r.URL.Query().Get("lang"), page, lens, full)
 	<-instDone
 	if err != nil {
 		if errors.Is(err, engine.ErrNotConfigured) {
@@ -359,7 +332,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// another app or an assistant searching for the person leaves no history
-	if page == 1 && st.History && linkApp(ctx) == "" && r.URL.Query().Get("terms") == "" && !queryBool(r, "nohistory") {
+	if page == 1 && !full && st.History && linkApp(ctx) == "" && r.URL.Query().Get("terms") == "" && !queryBool(r, "nohistory") {
 		_ = s.store.AddHistory(ctx, u.ID, &store.HistoryEntry{Kind: store.KindSearch, Query: q, Category: cat, Results: len(out.Results)})
 	}
 	out.Instant = inst

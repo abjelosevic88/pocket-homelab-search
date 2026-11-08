@@ -224,7 +224,9 @@ func str(v any) string {
 // Search runs one search.
 func (c *SearXNG) Search(ctx context.Context, q Query) (*Response, error) {
 	v := url.Values{"q": {q.Q}, "format": {"json"}}
-	if q.Category != "" {
+	// SearXNG adds every engine of a category asked for to the engines named,
+	// so a search naming its engines names no category
+	if q.Category != "" && len(q.Engines) == 0 {
 		v.Set("categories", q.Category)
 	}
 	if q.Page > 1 {

@@ -136,6 +136,9 @@ export default function Results() {
           else window.location.replace(r.redirect)
           return
         }
+        // the first engine's results come before the slower ones': theirs are
+        // added below once in, never moving what is already on screen
+        const rest = r.pending ? api.get<SearchResult>(`${V1}/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(cat)}${t}${lensParam}&full=1&nohistory=1`) : null
         // strong matches from your apps go on top of the results, so the list
         // waits a moment for them instead of moving once they arrive
         const show = () => {
@@ -143,6 +146,11 @@ export default function Results() {
           setInline(cat === 'general' ? pickInline(appsLatest.current) : [])
           setRes(r); setHits(r.results); setLoading(false)
           announceChange()
+          rest?.then(f => {
+            if (id !== seq.current) return
+            setHits(hs => { const seen = new Set(hs.map(h => h.url)); return [...hs, ...f.results.filter(h => !seen.has(h.url))] })
+            setRes(prev => prev && { ...prev, answers: f.answers, infoboxes: f.infoboxes, suggestions: f.suggestions, corrections: f.corrections, unresponsive: f.unresponsive, hidden: f.hidden, hidden_sites: f.hidden_sites, more: f.more, ms: f.ms, pending: false })
+          }).catch(() => { if (id === seq.current) setRes(prev => prev && { ...prev, pending: false }) })
         }
         const pending = cat === 'general' ? appsPending.current : null
         if (pending) Promise.race([pending, new Promise<void>(ok => window.setTimeout(ok, 600))]).then(show)
@@ -334,7 +342,7 @@ export default function Results() {
               {res.corrections.length > 0 && <p className="srp-fix">Did you mean <Link to={`/search?q=${encodeURIComponent(res.corrections[0])}${cat !== 'general' ? `&cat=${encodeURIComponent(cat)}` : ''}`}>{res.corrections[0]}</Link>?</p>}
               {res.answers.map((a, i) => <div key={i} className="srp-answer"><Icon name="zap" size={15} /><span className="grow">{a.text}</span>{a.url && <a className="small" href={a.url} target="_blank" rel="noreferrer noopener">Source</a>}</div>)}
               {inline.length > 0 && <div className="res-list res-apps-inline">{inline.map(x => <AppHitCard key={itemKey(x.app, x.item)} item={x.item} app={x.app} appName={x.name} />)}</div>}
-              {hits.length === 0 && <Empty title="No results" icon="search">Nothing came back for “{q}”{time ? ' in this time range' : ''}.{res.suggestions.length > 0 && <div className="chips srp-sugg-empty">{res.suggestions.slice(0, 6).map(s => <Link key={s} className="chip" to={`/search?q=${encodeURIComponent(s)}`}>{s}</Link>)}</div>}</Empty>}
+              {hits.length === 0 && !res.pending && <Empty title="No results" icon="search">Nothing came back for “{q}”{time ? ' in this time range' : ''}.{res.suggestions.length > 0 && <div className="chips srp-sugg-empty">{res.suggestions.slice(0, 6).map(s => <Link key={s} className="chip" to={`/search?q=${encodeURIComponent(s)}`}>{s}</Link>)}</div>}</Empty>}
               {cat === 'images'
                 ? <ImageGrid hits={hits} onPick={setLightbox} />
                 : <div className={cat === 'videos' ? 'vid-list' : 'res-list'}>
@@ -343,7 +351,8 @@ export default function Results() {
                     : <ResultCard key={h.url} hit={h} active={i === focus} newTab={!!settings?.new_tab} apps={send.apps} menu={menuFor(h)} onOpen={opened} thumb={cat === 'news'}
                       onPreview={togglePreview} previewing={preview?.url === h.url} />)}
                 </div>}
-              {res.more && hits.length > 0 && <div className="srp-more"><button type="button" className="btn" disabled={moreBusy} onClick={more}>{moreBusy ? 'Loading…' : 'More results'}</button></div>}
+              {res.pending && cat !== 'images' && <div className="res-list" aria-label="More results on their way…"><div className="res res-skel"><span className="skeleton w30" /><span className="skeleton w70" /><span className="skeleton w90" /></div></div>}
+              {res.more && !res.pending && hits.length > 0 && <div className="srp-more"><button type="button" className="btn" disabled={moreBusy} onClick={more}>{moreBusy ? 'Loading…' : 'More results'}</button></div>}
               <div className="srp-foot">
                 {res.hidden > 0 && <p className="small muted"><Icon name="eye-off" size={13} /> {plural(res.hidden, 'result')} hidden by your site rules{res.hidden_sites.length ? ` (${res.hidden_sites.slice(0, 3).join(', ')}${res.hidden_sites.length > 3 ? '…' : ''})` : ''} · <Link to="/sites">Manage</Link></p>}
                 {res.suggestions.length > 0 && hits.length > 0 && <div className="srp-related"><div className="home-h">Related searches</div><div className="chips">{res.suggestions.slice(0, 8).map(s => <Link key={s} className="chip" to={`/search?q=${encodeURIComponent(s)}${cat !== 'general' ? `&cat=${encodeURIComponent(cat)}` : ''}`}><Icon name="search" size={12} />{s}</Link>)}</div></div>}

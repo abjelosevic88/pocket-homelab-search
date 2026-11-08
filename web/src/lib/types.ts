@@ -37,6 +37,8 @@ export interface SearchResult {
   redirect?: string
   /** worked out on the server: a sum, a conversion, the weather, your tasks today… */
   instant?: InstantAnswer
+  /** slower engines are still answering: their results come with full=1 */
+  pending?: boolean
 }
 
 export type InstantKind = 'calc' | 'convert' | 'currency' | 'time' | 'weather' | 'tasks' | 'trip' | 'agenda'

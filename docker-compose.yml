@@ -43,6 +43,8 @@ services:
       SEARXNG_SECRET: ${ENGINE_SECRET:-pocket-search-private-engine}
       # two processes: a search, the AI answer's and a hovered tab's no longer queue behind each other
       GRANIAN_WORKERS: "2"
+      # each engine is asked on its own (the first answer shows at once): room for several searches' worth
+      GRANIAN_BLOCKING_THREADS: "16"
     configs:
       - source: engine-settings
         target: /pocket/settings.yml

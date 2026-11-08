@@ -37,8 +37,9 @@ type fakeEngine struct {
 	mu    sync.Mutex
 	asked []url.Values
 	srv   *httptest.Server
-	pages map[string]string // other paths: a tiny web site for the reading view
-	delay time.Duration     // how long /search takes
+	pages map[string]string        // other paths: a tiny web site for the reading view
+	delay time.Duration            // how long /search takes
+	slow  map[string]time.Duration // longer for a search asking only these engines
 }
 
 func (f *fakeEngine) last() url.Values {
@@ -62,7 +63,7 @@ func newApp(t *testing.T) *app {
 		case "/search":
 			f.mu.Lock()
 			f.asked = append(f.asked, r.URL.Query())
-			d := f.delay
+			d := f.delay + f.slow[r.URL.Query().Get("engines")]
 			f.mu.Unlock()
 			time.Sleep(d)
 			if r.URL.Query().Get("format") != "json" {
@@ -224,15 +225,15 @@ func TestSafeSearchAndEnginesFollowMySettings(t *testing.T) {
 	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"safe_search": 2, "language": "de", "engines_off": []string{"google"}, "engines_on": []string{"mojeek"}})
 	a.ok(a.alice, "GET", "/api/v1/search?q=x&cat=general&time=week&page=2", nil)
 	q := a.eng.last()
-	if q.Get("safesearch") != "2" || q.Get("language") != "de" || q.Get("time_range") != "week" || q.Get("pageno") != "2" || q.Get("categories") != "general" {
+	if q.Get("safesearch") != "2" || q.Get("language") != "de" || q.Get("time_range") != "week" || q.Get("pageno") != "2" || q.Get("categories") != "" {
 		t.Fatalf("engine asked %v", q)
 	}
 	if q.Get("engines") != "brave,mojeek" {
 		t.Fatalf("engines = %q, want brave,mojeek", q.Get("engines"))
 	}
 	// Bob's settings are his own
-	a.ok(a.bob, "GET", "/api/v1/search?q=y", nil)
-	if q := a.eng.last(); q.Get("safesearch") != "1" || q.Get("engines") != "" || q.Get("language") != "auto" {
+	a.ok(a.bob, "GET", "/api/v1/search?q=y&full=1", nil)
+	if q := a.eng.last(); q.Get("safesearch") != "1" || strings.Contains(q.Get("engines"), "mojeek") || q.Get("language") != "auto" {
 		t.Fatalf("bob asked %v", q)
 	}
 	if m := a.ok(a.bob, "GET", "/api/v1/settings", nil); m["safe_search"].(float64) != 1 {
@@ -572,6 +573,53 @@ func TestSameSearchAtOnceAsksTheEngineOnce(t *testing.T) {
 	a.eng.mu.Unlock()
 	if n != 1 {
 		t.Fatalf("engine asked %d times, want 1", n)
+	}
+}
+
+func TestSlowEngineDoesNotHoldTheResults(t *testing.T) {
+	a := newApp(t)
+	a.eng.slow = map[string]time.Duration{"brave": 800 * time.Millisecond}
+	start := time.Now()
+	first := a.ok(a.alice, "GET", "/api/v1/search?q=lanes&nohistory=1", nil)
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("first results took %v: the slow engine held them", took)
+	}
+	if first["pending"] != true || len(first["results"].([]any)) == 0 {
+		t.Fatalf("first answer = %v", first)
+	}
+	// each engine asked on its own
+	a.eng.mu.Lock()
+	asked := map[string]bool{}
+	for _, q := range a.eng.asked {
+		asked[q.Get("engines")] = true
+	}
+	a.eng.mu.Unlock()
+	if !asked["google"] || !asked["brave"] {
+		t.Fatalf("engines asked %v", asked)
+	}
+	// naming a category too would make SearXNG ask all of its engines in every lane
+	if q := a.eng.last(); q.Get("categories") != "" {
+		t.Fatalf("a lane named its category: %v", q)
+	}
+	full := a.ok(a.alice, "GET", "/api/v1/search?q=lanes&full=1", nil)
+	if full["pending"] != nil {
+		t.Fatalf("full answer still pending")
+	}
+	fr, ar := first["results"].([]any), full["results"].([]any)
+	for i := range fr {
+		if fr[i].(map[string]any)["url"] != ar[i].(map[string]any)["url"] {
+			t.Fatalf("result %d moved: %v → %v", i, fr[i], ar[i])
+		}
+	}
+	// both engines found the same pages: no repeats, and both are credited
+	if len(ar) != len(fr) {
+		t.Fatalf("full has %d results, first %d", len(ar), len(fr))
+	}
+	// now kept: asked again it is at once and complete
+	start = time.Now()
+	again := a.ok(a.alice, "GET", "/api/v1/search?q=lanes&nohistory=1", nil)
+	if time.Since(start) > 100*time.Millisecond || again["pending"] != nil {
+		t.Fatalf("second look not from memory: %v", again["pending"])
 	}
 }
 
