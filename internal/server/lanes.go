@@ -15,11 +15,16 @@ import (
 // A page of results no longer waits for its slowest engine: every engine is
 // asked on its own (a lane), the first one with results is shown at once and
 // the others' new results are added below as they come in, never moving what
-// is already on screen. The card about the thing (Wikipedia/Wikidata, often
-// the slowest of all) is a lane of its own and never holds the results up.
+// is already on screen. The card about the thing (Wikipedia) is a lane of its
+// own and never holds the results up; Wikidata, slow and often not answering
+// at all, adds its facts to that card later, when it can.
 
 // factEngines fill the side card rather than the results.
 var factEngines = map[string]bool{"wikipedia": true, "wikidata": true}
+
+// lateEngines are only waited for after everything else: their facts join
+// the card when they come (card=1), the page never waits for them.
+var lateEngines = map[string]bool{"wikidata": true}
 
 // laneGrace is how long the first answer waits for the others, so engines
 // answering nearly together are ranked together.
@@ -30,13 +35,15 @@ const laneGrace = 150 * time.Millisecond
 const maxLanes = 12
 
 // searchJob is one search on its way: early is closed when there is
-// something to show, done when every engine has answered.
+// something to show, done when every engine but the late ones has answered,
+// all when they have too.
 type searchJob struct {
-	early, done chan struct{}
-	earlyOnce   sync.Once
-	first       *searchOut // what was shown first
-	final       *searchOut // everything: first, then what came later below it
-	err         error
+	early, done, all chan struct{}
+	earlyOnce        sync.Once
+	first            *searchOut // what was shown first
+	final            *searchOut // everything: first, then what came later below it
+	card             *searchOut // final with the late engines' facts on the card
+	err              error
 }
 
 func (j *searchJob) showEarly(out *searchOut, err error) {
@@ -70,19 +77,23 @@ func (s *Server) lanesFor(ctx context.Context, st store.Settings, cat string, pa
 			return nil, nil
 		}
 	}
-	var facts, web []string
+	var facts, late, web []string
 	for _, n := range picked {
-		if factEngines[n] {
+		switch {
+		case lateEngines[n]:
+			late = append(late, n)
+		case factEngines[n]:
 			facts = append(facts, n)
-		} else {
+		default:
 			web = append(web, n)
 		}
 	}
+	// the card's engines alone bring no results
+	if len(web) == 0 {
+		return nil, errors.New("every search engine for " + strings.ToLower(categories[cat]) + " is switched off (Settings → Engines)")
+	}
 	// a next page has no side card, and asks once
 	if page > 1 {
-		if len(web) == 0 {
-			return [][]string{picked}, nil
-		}
 		return [][]string{web}, nil
 	}
 	var lanes [][]string
@@ -95,6 +106,9 @@ func (s *Server) lanesFor(ctx context.Context, st store.Settings, cat string, pa
 	}
 	if len(facts) > 0 {
 		lanes = append(lanes, facts)
+	}
+	for _, n := range late {
+		lanes = append(lanes, []string{n})
 	}
 	return lanes, nil
 }
@@ -109,10 +123,10 @@ func has(list []string, s string) bool {
 }
 
 type laneAnswer struct {
-	names []string
-	facts bool
-	res   *engine.Response
-	err   error
+	names       []string
+	facts, late bool
+	res         *engine.Response
+	err         error
 }
 
 // runSearch asks the engines for one search and fills the job; it runs on
@@ -120,11 +134,15 @@ type laneAnswer struct {
 func (s *Server) runSearch(job *searchJob, key string, uid int64, st store.Settings, q, cat, tr, lang string, page int, lens *store.Lens) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.EngineTimeout+3*time.Second)
 	defer cancel()
+	doneClosed := false
 	defer func() {
 		s.resMu.Lock()
 		delete(s.inflight, key)
 		s.resMu.Unlock()
-		close(job.done)
+		if !doneClosed {
+			close(job.done)
+		}
+		close(job.all)
 	}()
 	if lang == "" && lens != nil && lens.Language != "" {
 		lang = lens.Language
@@ -144,41 +162,60 @@ func (s *Server) runSearch(job *searchJob, key string, uid int64, st store.Setti
 	start := time.Now()
 	searchesRun.Add(1)
 	answers := make(chan laneAnswer, len(lanes))
-	webLanes := 0
+	webLanes, mainLanes, lateLanes := 0, 0, 0
 	for _, l := range lanes {
 		facts := len(l) > 0 && factEngines[l[0]]
-		if !facts {
+		late := len(l) == 1 && lateEngines[l[0]]
+		switch {
+		case late:
+			lateLanes++
+		case facts:
+			mainLanes++
+		default:
+			mainLanes++
 			webLanes++
 		}
 		query := base
 		query.Engines = l
 		go func() {
 			res, err := s.engine.Search(ctx, query)
-			answers <- laneAnswer{l, facts, res, err}
+			answers <- laneAnswer{l, facts, late, res, err}
 		}()
 	}
 	rules, _ := s.store.ListRules(ctx, uid)
 	rules = lensRules(rules, lens)
 
-	var shown, later []*engine.Response
+	var shown, later, lateRes []*engine.Response
 	var errs []error
 	var grace <-chan time.Time
-	webDone, got := 0, 0
+	webDone, got, lateGot := 0, 0, 0
 	early := false
 	showNow := func() {
 		early = true
-		if len(errs) == len(lanes) {
+		if len(errs) > 0 && len(errs) == mainLanes {
 			job.showEarly(nil, errs[0])
 			return
 		}
 		out := s.pageOut(ctx, uid, q, cat, tr, page, merge(shown), nil, rules, lens)
+		out.Infoboxes = mergeBoxes(out.Infoboxes, lateRes)
 		out.MS = time.Since(start).Milliseconds()
-		out.Pending = got < len(lanes)
+		out.Pending = got < mainLanes
+		out.CardPending = lateGot < lateLanes
 		job.showEarly(out, nil)
 	}
-	for got < len(lanes) {
+	gotLate := func(a laneAnswer) {
+		lateGot++
+		if a.err == nil && a.res != nil {
+			lateRes = append(lateRes, a.res)
+		}
+	}
+	for got < mainLanes {
 		select {
 		case a := <-answers:
+			if a.late {
+				gotLate(a)
+				continue
+			}
 			got++
 			if !a.facts {
 				webDone++
@@ -204,7 +241,7 @@ func (s *Server) runSearch(job *searchJob, key string, uid int64, st store.Setti
 				showNow()
 			}
 		case <-ctx.Done():
-			got = len(lanes)
+			got = mainLanes
 		}
 	}
 	if !early {
@@ -213,15 +250,92 @@ func (s *Server) runSearch(job *searchJob, key string, uid int64, st store.Setti
 	if job.err != nil || job.first == nil {
 		return
 	}
-	final := job.first
+	final := *job.first
 	if len(later) > 0 {
-		final = s.pageOut(ctx, uid, q, cat, tr, page, merge(shown), merge(later), rules, lens)
+		final = *s.pageOut(ctx, uid, q, cat, tr, page, merge(shown), merge(later), rules, lens)
 		final.MS = time.Since(start).Milliseconds()
 	}
-	f := *final
-	f.Pending = false
-	s.remember(key, &f)
-	job.final = &f
+	final.Infoboxes = mergeBoxes(final.Infoboxes, lateRes)
+	final.Pending = false
+	final.CardPending = lateGot < lateLanes
+	s.remember(key, &final)
+	job.final = &final
+	doneClosed = true
+	close(job.done)
+
+	// the late engines: their facts join the card, nothing else moves
+	for lateGot < lateLanes {
+		select {
+		case a := <-answers:
+			gotLate(a)
+		case <-ctx.Done():
+			lateGot = lateLanes
+		}
+	}
+	card := final
+	card.Infoboxes = mergeBoxes(final.Infoboxes, lateRes)
+	card.CardPending = false
+	s.remember(key, &card)
+	job.card = &card
+}
+
+// mergeBoxes adds the late engines' cards to the ones there: the same thing
+// (same address or name) gets their facts, links and picture where it had none.
+func mergeBoxes(boxes []engine.Infobox, late []*engine.Response) []engine.Infobox {
+	out := append(make([]engine.Infobox, 0, len(boxes)), boxes...)
+	for _, r := range late {
+		for _, b := range r.Infoboxes {
+			i := -1
+			for j, x := range out {
+				if (x.URL != "" && x.URL == b.URL) || strings.EqualFold(x.Title, b.Title) {
+					i = j
+					break
+				}
+			}
+			if i < 0 {
+				out = append(out, b)
+				continue
+			}
+			m := out[i]
+			m.Attrs = append([]engine.Attr(nil), m.Attrs...)
+			for _, a := range b.Attrs {
+				dup := false
+				for _, x := range m.Attrs {
+					if strings.EqualFold(x.Label, a.Label) {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					m.Attrs = append(m.Attrs, a)
+				}
+			}
+			m.Links = append([]engine.Link(nil), m.Links...)
+			for _, l := range b.Links {
+				dup := false
+				for _, x := range m.Links {
+					if urlKey(x.URL) == urlKey(l.URL) {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					m.Links = append(m.Links, l)
+				}
+			}
+			if m.Image == "" {
+				m.Image = b.Image
+			}
+			if m.Content == "" {
+				m.Content = b.Content
+			}
+			if m.URL == "" {
+				m.URL = b.URL
+			}
+			out[i] = m
+		}
+	}
+	return out
 }
 
 // pageOut is a page as the person sees it: what came first in the engines'

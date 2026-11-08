@@ -39,6 +39,8 @@ export interface SearchResult {
   instant?: InstantAnswer
   /** slower engines are still answering: their results come with full=1 */
   pending?: boolean
+  /** Wikidata's facts for the card are still on their way: they come with card=1 */
+  card_pending?: boolean
 }
 
 export type InstantKind = 'calc' | 'convert' | 'currency' | 'time' | 'weather' | 'tasks' | 'trip' | 'agenda'

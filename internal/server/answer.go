@@ -71,7 +71,7 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	res, err := s.search(ctx, u, st, strings.TrimSpace(in.Q), in.Cat, in.Time, "", 1, nil, true)
+	res, err := s.search(ctx, u, st, strings.TrimSpace(in.Q), in.Cat, in.Time, "", 1, nil, waitAll)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return

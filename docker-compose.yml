@@ -92,6 +92,7 @@ configs:
         # a miss (most searches) often takes 2-3 s; the infobox is not worth the wait
         - name: wikipedia
           timeout: 1.2
-        # times out on most searches; the side card comes from Wikipedia alone
+        # slow (1-2 s) and often not answering: asked on its own, its facts join
+        # the card when they come and nothing waits for them
         - name: wikidata
-          disabled: true
+          timeout: 2.0

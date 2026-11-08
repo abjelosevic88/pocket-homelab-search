@@ -55,10 +55,18 @@ type searchOut struct {
 	More         bool                  `json:"more"` // there is probably a next page
 	Engine       string                `json:"engine"`
 	MS           int64                 `json:"ms"`
-	Redirect     string                `json:"redirect,omitempty"` // a bang: go here instead
-	Instant      *instant.Answer       `json:"instant,omitempty"`  // worked out on the server: a sum, the weather…
-	Pending      bool                  `json:"pending,omitempty"`  // slower engines are still answering: ask again with full=1
+	Redirect     string                `json:"redirect,omitempty"`     // a bang: go here instead
+	Instant      *instant.Answer       `json:"instant,omitempty"`      // worked out on the server: a sum, the weather…
+	Pending      bool                  `json:"pending,omitempty"`      // slower engines are still answering: ask again with full=1
+	CardPending  bool                  `json:"card_pending,omitempty"` // more facts for the card on their way: ask again with card=1
 }
+
+// how long a search waits for its engines
+const (
+	waitFirst = iota // the first one with results
+	waitAll          // all but the late ones (Wikidata)
+	waitCard         // all of them
+)
 
 // domainOf is a result's site without "www.".
 func domainOf(raw string) string {
@@ -187,16 +195,19 @@ func (s *Server) remember(key string, out *searchOut) {
 	s.results[key] = cachedSearch{out, time.Now()}
 }
 
-// search runs one search for a person with their settings and rules: with
-// full, once every engine has answered; without, as soon as the first one has
-// (Pending then says more is on its way: ask again with full).
-func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q, cat, tr, lang string, page int, lens *store.Lens, full bool) (*searchOut, error) {
+// search runs one search for a person with their settings and rules, back
+// as soon as the engines wait asks for have answered (Pending / CardPending
+// then say more is on its way).
+func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q, cat, tr, lang string, page int, lens *store.Lens, wait int) (*searchOut, error) {
 	lensKey := ""
 	if lens != nil {
 		lensKey = fmt.Sprintf("%d@%s", lens.ID, lens.UpdatedAt)
 	}
 	key := searchKey(u.ID, q, cat, tr+"\x00"+lang+"\x00"+lensKey, page)
 	out := s.cached(key)
+	if wait == waitCard && out != nil && out.CardPending {
+		out = nil // the card's late facts are still on their way: wait for them below
+	}
 	if out == nil {
 		if !s.engine.Configured() {
 			return nil, engine.ErrNotConfigured
@@ -205,17 +216,20 @@ func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q
 		s.resMu.Lock()
 		job, ok := s.inflight[key]
 		if !ok {
-			job = &searchJob{early: make(chan struct{}), done: make(chan struct{})}
+			job = &searchJob{early: make(chan struct{}), done: make(chan struct{}), all: make(chan struct{})}
 			s.inflight[key] = job
 			go s.runSearch(job, key, u.ID, st, q, cat, tr, lang, page, lens)
 		}
 		s.resMu.Unlock()
-		wait := job.early
-		if full {
-			wait = job.done
+		ready := job.early
+		switch wait {
+		case waitAll:
+			ready = job.done
+		case waitCard:
+			ready = job.all
 		}
 		select {
-		case <-wait:
+		case <-ready:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -223,8 +237,11 @@ func (s *Server) search(ctx context.Context, u *store.User, st store.Settings, q
 			return nil, job.err
 		}
 		out = job.first
-		if full && job.final != nil {
+		if wait >= waitAll && job.final != nil {
 			out = job.final
+		}
+		if wait == waitCard && job.card != nil {
+			out = job.card
 		}
 		if out == nil {
 			return nil, errors.New("the search engine did not answer")
@@ -309,6 +326,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// full=1: the rest of a search whose first answer is already shown; other
 	// apps and assistants always get every engine's answer at once
 	full := queryBool(r, "full") || linkApp(ctx) != "" || r.URL.Query().Get("terms") != ""
+	// card=1: the late engines' facts for the card, after the rest
+	card := queryBool(r, "card")
+	wait := waitFirst
+	if full {
+		wait = waitAll
+	}
+	if card {
+		wait, full = waitCard, true
+	}
 	// instant answers (a sum, a conversion, the weather…) are worked out
 	// while the engines search
 	var inst *instant.Answer
@@ -321,7 +347,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			inst = s.instantAnswer(ictx, u, st, q)
 		}
 	}()
-	out, err := s.search(ctx, u, st, q, cat, tr, r.URL.Query().Get("lang"), page, lens, full)
+	out, err := s.search(ctx, u, st, q, cat, tr, r.URL.Query().Get("lang"), page, lens, wait)
 	<-instDone
 	if err != nil {
 		if errors.Is(err, engine.ErrNotConfigured) {

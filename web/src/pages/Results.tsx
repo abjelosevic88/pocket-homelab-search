@@ -138,7 +138,13 @@ export default function Results() {
         }
         // the first engine's results come before the slower ones': theirs are
         // added below once in, never moving what is already on screen
-        const rest = r.pending ? api.get<SearchResult>(`${V1}/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(cat)}${t}${lensParam}&full=1&nohistory=1`) : null
+        const again = `${V1}/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(cat)}${t}${lensParam}&nohistory=1`
+        const rest = r.pending ? api.get<SearchResult>(`${again}&full=1`) : null
+        // Wikidata's facts join the card when (if) they come; nothing else waits for them
+        const card = (x: SearchResult) => {
+          if (!x.card_pending) return
+          api.get<SearchResult>(`${again}&card=1`).then(c => { if (id === seq.current) setRes(prev => prev && { ...prev, infoboxes: c.infoboxes, card_pending: false }) }).catch(() => {})
+        }
         // strong matches from your apps go on top of the results, so the list
         // waits a moment for them instead of moving once they arrive
         const show = () => {
@@ -146,10 +152,12 @@ export default function Results() {
           setInline(cat === 'general' ? pickInline(appsLatest.current) : [])
           setRes(r); setHits(r.results); setLoading(false)
           announceChange()
+          if (!rest) card(r)
           rest?.then(f => {
             if (id !== seq.current) return
             setHits(hs => { const seen = new Set(hs.map(h => h.url)); return [...hs, ...f.results.filter(h => !seen.has(h.url))] })
             setRes(prev => prev && { ...prev, answers: f.answers, infoboxes: f.infoboxes, suggestions: f.suggestions, corrections: f.corrections, unresponsive: f.unresponsive, hidden: f.hidden, hidden_sites: f.hidden_sites, more: f.more, ms: f.ms, pending: false })
+            card(f)
           }).catch(() => { if (id === seq.current) setRes(prev => prev && { ...prev, pending: false }) })
         }
         const pending = cat === 'general' ? appsPending.current : null

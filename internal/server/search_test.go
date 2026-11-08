@@ -71,6 +71,11 @@ func newApp(t *testing.T) *app {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("engines") == "wikidata" {
+				_, _ = io.WriteString(w, `{"query":"x","results":[],"answers":[],"corrections":[],"suggestions":[],"unresponsive_engines":[],
+				"infoboxes":[{"infobox":"X","id":"https://en.wikipedia.org/wiki/X","content":"","urls":[{"title":"Official site","url":"https://x.example","official":true}],"attributes":[{"label":"Born","value":"1900"},{"label":"Died","value":"1980"}]}]}`)
+				return
+			}
 			_, _ = io.WriteString(w, `{"query":"x","results":[
 				{"url":"https://www.pinterest.com/pin/1","title":"Pin","content":"a pin","engine":"google","engines":["google"],"score":3,"category":"general"},
 				{"url":"https://medium.com/post","title":"Post","content":"words","engine":"brave","engines":["brave","google"],"score":2.5,"category":"general"},
@@ -81,7 +86,7 @@ func newApp(t *testing.T) *app {
 		case "/autocompleter":
 			_ = json.NewEncoder(w).Encode([]any{r.URL.Query().Get("q"), []string{"golang", "goland"}})
 		case "/config":
-			_, _ = io.WriteString(w, `{"engines":[{"name":"google","categories":["general"],"enabled":true,"shortcut":"go"},{"name":"brave","categories":["general"],"enabled":true,"shortcut":"br"},{"name":"mojeek","categories":["general"],"enabled":false,"shortcut":"mjk"}]}`)
+			_, _ = io.WriteString(w, `{"engines":[{"name":"google","categories":["general"],"enabled":true,"shortcut":"go"},{"name":"brave","categories":["general"],"enabled":true,"shortcut":"br"},{"name":"mojeek","categories":["general"],"enabled":false,"shortcut":"mjk"},{"name":"wikidata","categories":["general"],"enabled":true,"shortcut":"wd"}]}`)
 		default:
 			f.mu.Lock()
 			body, ok := f.pages[r.URL.Path]
@@ -620,6 +625,40 @@ func TestSlowEngineDoesNotHoldTheResults(t *testing.T) {
 	again := a.ok(a.alice, "GET", "/api/v1/search?q=lanes&nohistory=1", nil)
 	if time.Since(start) > 100*time.Millisecond || again["pending"] != nil {
 		t.Fatalf("second look not from memory: %v", again["pending"])
+	}
+}
+
+func TestWikidataJoinsTheCardLater(t *testing.T) {
+	a := newApp(t)
+	a.eng.slow = map[string]time.Duration{"wikidata": 800 * time.Millisecond}
+	start := time.Now()
+	first := a.ok(a.alice, "GET", "/api/v1/search?q=card&nohistory=1", nil)
+	full := a.ok(a.alice, "GET", "/api/v1/search?q=card&full=1", nil)
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("results waited %v for Wikidata", took)
+	}
+	if first["card_pending"] != true || full["card_pending"] != true {
+		t.Fatalf("card_pending first=%v full=%v", first["card_pending"], full["card_pending"])
+	}
+	card := a.ok(a.alice, "GET", "/api/v1/search?q=card&card=1", nil)
+	boxes := card["infoboxes"].([]any)
+	if card["card_pending"] != nil || len(boxes) != 1 {
+		t.Fatalf("card = %v", card)
+	}
+	b := boxes[0].(map[string]any)
+	if attrs := b["attributes"].([]any); len(attrs) != 2 || attrs[1].(map[string]any)["label"] != "Died" {
+		t.Fatalf("attributes = %v", attrs)
+	}
+	if links := b["links"].([]any); len(links) != 2 || b["content"] != "About X" {
+		t.Fatalf("links = %v, content %v", links, b["content"])
+	}
+	if n := len(card["results"].([]any)); n != len(full["results"].([]any)) {
+		t.Fatalf("card moved results: %d vs %d", n, len(full["results"].([]any)))
+	}
+	// kept with the card from now on
+	again := a.ok(a.alice, "GET", "/api/v1/search?q=card&nohistory=1", nil)
+	if again["card_pending"] != nil || len(again["infoboxes"].([]any)[0].(map[string]any)["attributes"].([]any)) != 2 {
+		t.Fatalf("second look = %v", again["infoboxes"])
 	}
 }
 
