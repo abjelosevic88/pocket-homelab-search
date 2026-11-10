@@ -54,6 +54,13 @@ var pocketApps = []pocketApp{
 			body: func(in sendIn) map[string]any {
 				return map[string]any{"name": in.Title, "url": in.URL, "status": "want", "notes": strings.TrimSpace(in.Snippet + "\n\nFound with Pocket Search — check its size on the shop page.")}
 			}, id: f("id"), route: "/furniture/{id}"}},
+	{slug: "puzzlecraft", name: "Pocket Puzzlecraft", bang: "puzzles", aliases: []string{"puzzle", "pz"}, reason: "Search your puzzles, escape rooms, puzzle books and word lists beside the web, and keep words you found as a word list to make puzzles from",
+		search: &appSearch{scope: "puzzlecraft:read", path: "/api/v1/search", q: "q", list: "results",
+			id: f("id"), title: f("title"), snippet: f("snippet"), date: f("date"), routeOf: puzzlecraftRoute, kindOf: puzzlecraftKind, kind: "puzzle"},
+		send: &appSend{scope: "puzzlecraft:write", label: "Make a word list (Pocket Puzzlecraft)", done: "Added to your word lists in Pocket Puzzlecraft", path: "/api/v1/wordlists",
+			body: func(in sendIn) map[string]any {
+				return map[string]any{"name": in.Title, "text": strings.TrimSpace(in.Snippet)}
+			}, id: f("id"), route: "/words?list={id}"}},
 	{slug: "documents", name: "Pocket Documents", bang: "docs", reason: "Search your documents (titles and their text) beside the web",
 		search: &appSearch{scope: "documents:read", path: "/api/v1/documents", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
 			id: f("id"), title: f("title", "original_name"), snippet: f("content"), date: f("created"), route: "/documents/{id}", kind: "document"}},
@@ -159,6 +166,25 @@ func formsKind(row map[string]any) string {
 // "/groups/1/players/2", "/groups/1?tab=chat"), else its kind's page.
 // roomsRoute is a Pocket Rooms result's page: its own path (a plan, a
 // layout with a room on it, a piece of furniture).
+func puzzlecraftRoute(row map[string]any) string {
+	if p := pick(row, f("path")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
+		return p
+	}
+	return "/"
+}
+
+func puzzlecraftKind(row map[string]any) string {
+	switch pick(row, f("type")) {
+	case "adventure":
+		return "escape room"
+	case "book":
+		return "puzzle book"
+	case "wordlist":
+		return "word list"
+	}
+	return "puzzle"
+}
+
 func roomsRoute(row map[string]any) string {
 	if p := pick(row, f("path")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
 		return p
