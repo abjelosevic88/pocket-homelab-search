@@ -1196,3 +1196,47 @@ func TestYourAppsPrintFarm(t *testing.T) {
 		t.Fatal("!3d does not search Pocket Print Farm")
 	}
 }
+
+// Pocket Game Builder: a game opens its page, a picture, sound or music piece
+// the library; !gamebuilder and !mygames search it.
+func TestYourAppsGameBuilder(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"results":[{"kind":"game","id":3,"title":"Cat and fish","subtitle":"catch · shared","text":"a cat catching fish","url":"https://gamebuilder.example/games/3","date":"2026-11-10"},{"kind":"image","id":7,"title":"Fish","subtitle":"picture","url":"https://gamebuilder.example/library","date":"2026-11-09"},{"kind":"sound","id":8,"title":"Splash","subtitle":"sound effect"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"gamebuilder": map[string]any{"mode": "direct", "url": sib.URL, "token": "pgb_secret", "public": "https://gamebuilder.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=fish&app=gamebuilder", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 3 || !strings.Contains(gotQuery, "q=fish") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	want := []struct{ kind, url string }{
+		{"game", "https://gamebuilder.example/games/3"},
+		{"picture", "https://gamebuilder.example/library"},
+		{"sound", "https://gamebuilder.example/library"},
+	}
+	for i, w := range want {
+		it := items[i].(map[string]any)
+		if it["kind"] != w.kind || it["url"] != w.url {
+			t.Errorf("item %d = %v", i, it)
+		}
+	}
+	found := 0
+	for _, b := range appBangs() {
+		if (b.Trigger == "gamebuilder" || b.Trigger == "mygames") && b.URL == "/search?cat=apps&app=gamebuilder&q={q}" {
+			found++
+		}
+	}
+	if found != 2 {
+		t.Fatal("!gamebuilder and !mygames do not both search Pocket Game Builder")
+	}
+}

@@ -135,6 +135,9 @@ var pocketApps = []pocketApp{
 	{slug: "printfarm", name: "Pocket Print Farm", bang: "printfarm", aliases: []string{"3d", "print3d"}, reason: "Find your 3D models (and their files), printers, filament, prints and queued jobs",
 		search: &appSearch{scope: "printfarm:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "hits",
 			id: f("id"), title: f("title"), snippet: f("subtitle"), routeOf: printfarmRoute, kindOf: printfarmKind, kind: "model"}},
+	{slug: "gamebuilder", name: "Pocket Game Builder", bang: "gamebuilder", aliases: []string{"mygames"}, reason: "Find the games you made (titles, descriptions and the words in them) and the pictures, sounds and music in your game library",
+		search: &appSearch{scope: "gamebuilder:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
+			id: f("id"), title: f("title"), snippet: f("subtitle", "text"), date: f("date"), routeOf: gamebuilderRoute, kindOf: gamebuilderKind, kind: "game"}},
 	{slug: "travel", name: "Pocket Travel", bang: "trips", reason: "Search your trips beside the web",
 		search: &appSearch{scope: "trips:read", path: "/api/v1/trips", q: "q",
 			id: f("id"), title: f("name"), snippet: f("destination", "description"), date: f("start_date"), route: "/trips/{id}", kind: "trip"}},
@@ -508,6 +511,33 @@ func printfarmKind(row map[string]any) string {
 		return k
 	case "job":
 		return "queued"
+	}
+	return ""
+}
+
+// gamebuilderRoute is a Pocket Game Builder result's page: a game opens
+// itself, a picture, sound or music piece the library.
+func gamebuilderRoute(row map[string]any) string {
+	switch pick(row, f("kind")) {
+	case "game":
+		return "/games/{id}"
+	case "image", "sound", "music":
+		return "/library"
+	}
+	return "/"
+}
+
+// gamebuilderKind: what the card says it is.
+func gamebuilderKind(row map[string]any) string {
+	switch pick(row, f("kind")) {
+	case "game":
+		return "game"
+	case "image":
+		return "picture"
+	case "sound":
+		return "sound"
+	case "music":
+		return "music"
 	}
 	return ""
 }
