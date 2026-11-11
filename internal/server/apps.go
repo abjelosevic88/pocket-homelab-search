@@ -54,6 +54,9 @@ var pocketApps = []pocketApp{
 			body: func(in sendIn) map[string]any {
 				return map[string]any{"name": in.Title, "url": in.URL, "status": "want", "notes": strings.TrimSpace(in.Snippet + "\n\nFound with Pocket Search — check its size on the shop page.")}
 			}, id: f("id"), route: "/furniture/{id}"}},
+	{slug: "math", name: "Pocket Math", bang: "math", aliases: []string{"calc", "sum"}, reason: "Search your maths notebooks, ready calculations and kept answers beside the web — and see a sum you typed (100 EUR in BAM, 60 mph to km/h, 20% off 80) worked out exactly",
+		search: &appSearch{scope: "math:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
+			id: f("id"), title: f("title"), snippet: f("line", "subtitle"), routeOf: mathRoute, kindOf: mathKind, kind: "notebook"}},
 	{slug: "puzzlecraft", name: "Pocket Puzzlecraft", bang: "puzzles", aliases: []string{"puzzle", "pz"}, reason: "Search your puzzles, escape rooms, puzzle books and word lists beside the web, and keep words you found as a word list to make puzzles from",
 		search: &appSearch{scope: "puzzlecraft:read", path: "/api/v1/search", q: "q", list: "results",
 			id: f("id"), title: f("title"), snippet: f("snippet"), date: f("date"), routeOf: puzzlecraftRoute, kindOf: puzzlecraftKind, kind: "puzzle"},
@@ -183,6 +186,27 @@ func puzzlecraftKind(row map[string]any) string {
 		return "word list"
 	}
 	return "puzzle"
+}
+
+// mathRoute is a Pocket Math result's page (a notebook, a calculation, a
+// kept answer, or a sum worked out on the start page).
+func mathRoute(row map[string]any) string {
+	if p := pick(row, f("path")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
+		return p
+	}
+	return "/"
+}
+
+func mathKind(row map[string]any) string {
+	switch pick(row, f("kind")) {
+	case "formula":
+		return "calculation"
+	case "answer":
+		return "kept answer"
+	case "sum":
+		return "worked out"
+	}
+	return "notebook"
 }
 
 func roomsRoute(row map[string]any) string {
