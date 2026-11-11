@@ -91,6 +91,7 @@ const P: Record<string, string> = {
   send: 'M22 2L11 13M22 2l-7 20-4-9-9-4z',
   pause: 'M8 5v14M16 5v14',
   play: 'M7 4l13 8-13 8z',
+  mic: 'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3',
   crosshair: 'M12 2v4M12 18v4M2 12h4M18 12h4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
   image: 'M3 5h18v14H3zM3 15l5-5 4 4 3-3 6 6M15.5 8.5h.01',
   columns: 'M3 4h18v16H3zM12 4v16',

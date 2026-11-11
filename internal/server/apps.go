@@ -129,6 +129,9 @@ var pocketApps = []pocketApp{
 	{slug: "trails", name: "Pocket Trails", bang: "trails", aliases: []string{"hike"}, reason: "Search your hikes, walks, runs and rides — routes, outings, gear and the spots along the way — beside the web",
 		search: &appSearch{scope: "trails:read", path: "/api/v1/search", q: "q", list: "results",
 			id: f("id"), title: f("title"), snippet: f("subtitle"), date: f("date"), routeOf: trailsRoute, kindOf: trailsKind, kind: "route"}},
+	{slug: "karaoke", name: "Pocket Karaoke", bang: "karaoke", aliases: []string{"sing"}, reason: "Find your karaoke songs by title, artist or a line of their words, your singers and nights",
+		search: &appSearch{scope: "karaoke:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "hits",
+			id: f("id"), title: f("title"), snippet: f("subtitle", "snippet"), snippetOf: karaokeSnippet, routeOf: karaokeRoute, kindOf: karaokeKind, kind: "song"}},
 	{slug: "travel", name: "Pocket Travel", bang: "trips", reason: "Search your trips beside the web",
 		search: &appSearch{scope: "trips:read", path: "/api/v1/trips", q: "q",
 			id: f("id"), title: f("name"), snippet: f("destination", "description"), date: f("start_date"), route: "/trips/{id}", kind: "trip"}},
@@ -295,6 +298,41 @@ func trailsRoute(row map[string]any) string {
 		return "/gear"
 	}
 	return "/"
+}
+
+// karaokeRoute is a Pocket Karaoke result's page: its own path (a song, a
+// singer, a night), else from its kind.
+func karaokeRoute(row map[string]any) string {
+	if p := pick(row, f("path")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
+		return p
+	}
+	switch pick(row, f("kind")) {
+	case "song":
+		return "/songs/{id}"
+	case "singer":
+		return "/singers/{id}"
+	case "night":
+		return "/nights/{id}"
+	}
+	return "/"
+}
+
+// karaokeKind: "song", "singer" or "night" on the card.
+func karaokeKind(row map[string]any) string {
+	switch k := pick(row, f("kind")); k {
+	case "song", "singer", "night":
+		return k
+	}
+	return ""
+}
+
+// karaokeSnippet: the artist, then the line of the words that matched.
+func karaokeSnippet(row map[string]any) string {
+	sub, line := pick(row, f("subtitle")), pick(row, f("snippet"))
+	if sub != "" && line != "" {
+		return sub + " · " + line
+	}
+	return ""
 }
 
 // trailsKind: "route", "outing", "gear" or "spot" on the card.

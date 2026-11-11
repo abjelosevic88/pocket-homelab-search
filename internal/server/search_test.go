@@ -1094,3 +1094,60 @@ func TestYourAppsTrailsOff(t *testing.T) {
 		t.Fatalf("section = %v", sec)
 	}
 }
+
+// Pocket Karaoke: songs (by title, artist or a line of their words), singers
+// and nights each open their page in Pocket Karaoke; a song found by its
+// words shows the artist and the line.
+func TestYourAppsKaraoke(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"hits":[{"kind":"song","id":1,"title":"Dancing Queen","subtitle":"ABBA","snippet":"","url":"https://karaoke.example/songs/1","path":"/songs/1"},{"kind":"song","id":2,"title":"Waterloo","subtitle":"ABBA","snippet":"“My, my, at Waterloo Napoleon did surrender”","path":"/songs/2"},{"kind":"singer","id":3,"title":"Ana","subtitle":"12 songs sung","path":"/singers/3"},{"kind":"night","id":4,"title":"Friday karaoke","subtitle":"2026-11-13 21:00 Living room"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"karaoke": map[string]any{"mode": "direct", "url": sib.URL, "token": "pka_secret", "public": "https://karaoke.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=abba&app=karaoke", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 4 || !strings.Contains(gotQuery, "q=abba") || !strings.Contains(gotQuery, "limit=8") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	want := []struct{ kind, title, url, snippet string }{
+		{"song", "Dancing Queen", "https://karaoke.example/songs/1", "ABBA"},
+		{"song", "Waterloo", "https://karaoke.example/songs/2", "ABBA · “My, my, at Waterloo Napoleon did surrender”"},
+		{"singer", "Ana", "https://karaoke.example/singers/3", "12 songs sung"},
+		{"night", "Friday karaoke", "https://karaoke.example/nights/4", "2026-11-13 21:00 Living room"}, // no path: from its kind
+	}
+	for i, w := range want {
+		it := items[i].(map[string]any)
+		if it["kind"] != w.kind || it["title"] != w.title || it["url"] != w.url || it["snippet"] != w.snippet {
+			t.Errorf("item %d = %v", i, it)
+		}
+	}
+	// !karaoke and !sing both search it
+	found := map[string]bool{}
+	for _, b := range appBangs() {
+		if b.Trigger == "karaoke" || b.Trigger == "sing" {
+			found[b.Trigger] = b.URL == "/search?cat=apps&app=karaoke&q={q}"
+		}
+	}
+	if !found["karaoke"] || !found["sing"] {
+		t.Fatalf("bangs = %v", found)
+	}
+}
+
+// Pocket Karaoke not connected: its section says so and the rest of the search goes on.
+func TestYourAppsKaraokeOff(t *testing.T) {
+	a := newApp(t)
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=abba&app=karaoke", nil)
+	sec := m["sections"].([]any)[0].(map[string]any)
+	if sec["app"] != "karaoke" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
+		t.Fatalf("section = %v", sec)
+	}
+}
