@@ -1151,3 +1151,48 @@ func TestYourAppsKaraokeOff(t *testing.T) {
 		t.Fatalf("section = %v", sec)
 	}
 }
+
+// Pocket Print Farm: models, printers, filament, prints and jobs each open
+// their page in Pocket Print Farm.
+func TestYourAppsPrintFarm(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"hits":[{"kind":"model","id":2,"title":"Twisted vase","subtitle":"home, vase mode · 52 printed","path":"/models/2"},{"kind":"printer","id":1,"title":"Mk4","subtitle":"Prusa MK4 · Workshop","path":"/printers/1"},{"kind":"print","id":9,"title":"Twisted vase","subtitle":"2026-11-10 · Mk4 · done"},{"kind":"job","id":4,"title":"Vase for Ana","subtitle":"in the queue, 0 of 1","path":"/queue"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"printfarm": map[string]any{"mode": "direct", "url": sib.URL, "token": "ppf_secret", "public": "https://printfarm.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=vase&app=printfarm", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 4 || !strings.Contains(gotQuery, "q=vase") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	want := []struct{ kind, url string }{
+		{"model", "https://printfarm.example/models/2"},
+		{"printer", "https://printfarm.example/printers/1"},
+		{"print", "https://printfarm.example/prints/9"}, // no path: from its kind
+		{"queued", "https://printfarm.example/queue"},
+	}
+	for i, w := range want {
+		it := items[i].(map[string]any)
+		if it["kind"] != w.kind || it["url"] != w.url {
+			t.Errorf("item %d = %v", i, it)
+		}
+	}
+	found := false
+	for _, b := range appBangs() {
+		if b.Trigger == "3d" {
+			found = b.URL == "/search?cat=apps&app=printfarm&q={q}"
+		}
+	}
+	if !found {
+		t.Fatal("!3d does not search Pocket Print Farm")
+	}
+}

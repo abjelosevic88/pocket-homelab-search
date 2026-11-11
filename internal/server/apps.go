@@ -132,6 +132,9 @@ var pocketApps = []pocketApp{
 	{slug: "karaoke", name: "Pocket Karaoke", bang: "karaoke", aliases: []string{"sing"}, reason: "Find your karaoke songs by title, artist or a line of their words, your singers and nights",
 		search: &appSearch{scope: "karaoke:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "hits",
 			id: f("id"), title: f("title"), snippet: f("subtitle", "snippet"), snippetOf: karaokeSnippet, routeOf: karaokeRoute, kindOf: karaokeKind, kind: "song"}},
+	{slug: "printfarm", name: "Pocket Print Farm", bang: "printfarm", aliases: []string{"3d", "print3d"}, reason: "Find your 3D models (and their files), printers, filament, prints and queued jobs",
+		search: &appSearch{scope: "printfarm:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "hits",
+			id: f("id"), title: f("title"), snippet: f("subtitle"), routeOf: printfarmRoute, kindOf: printfarmKind, kind: "model"}},
 	{slug: "travel", name: "Pocket Travel", bang: "trips", reason: "Search your trips beside the web",
 		search: &appSearch{scope: "trips:read", path: "/api/v1/trips", q: "q",
 			id: f("id"), title: f("name"), snippet: f("destination", "description"), date: f("start_date"), route: "/trips/{id}", kind: "trip"}},
@@ -475,4 +478,36 @@ func noteMarkdown(in sendIn) string {
 		b.WriteString("_Found searching for “" + in.Query + "” in Pocket Search._\n")
 	}
 	return b.String()
+}
+
+// printfarmRoute is a Pocket Print Farm result's page: its own path (a
+// model, a printer, a print, the filament or the queue), else from its kind.
+func printfarmRoute(row map[string]any) string {
+	if p := pick(row, f("path")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
+		return p
+	}
+	switch pick(row, f("kind")) {
+	case "model":
+		return "/models/{id}"
+	case "printer":
+		return "/printers/{id}"
+	case "print":
+		return "/prints/{id}"
+	case "filament":
+		return "/filament"
+	case "job":
+		return "/queue"
+	}
+	return "/"
+}
+
+// printfarmKind: what the card says it is.
+func printfarmKind(row map[string]any) string {
+	switch k := pick(row, f("kind")); k {
+	case "model", "printer", "filament", "print":
+		return k
+	case "job":
+		return "queued"
+	}
+	return ""
 }
