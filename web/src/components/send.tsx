@@ -63,7 +63,7 @@ const ICONS: Record<string, string> = {
   reader: 'book-open', notes: 'note', tasks: 'check-circle', lookout: 'binoculars', wishlist: 'star', clips: 'copy', bookshelf: 'book-open',
   documents: 'archive', files: 'package', calendar: 'calendar', contacts: 'users', kitchen: 'habit', inventory: 'package', boards: 'columns',
   projects: 'layers', podcasts: 'rss', music: 'play', library: 'book-open', day: 'today', learn: 'sparkles', travel: 'plane', draw: 'palette',
-  photos: 'image', watch: 'video', audiobooks: 'play', mail: 'mail', blog: 'edit', chat: 'hash', forms: 'list', crm: 'trending-up', league: 'ball', tables: 'grid', rentals: 'key', trails: 'flag', karaoke: 'mic', printfarm: 'printer', gamebuilder: 'gamepad',
+  photos: 'image', watch: 'video', audiobooks: 'play', mail: 'mail', blog: 'edit', chat: 'hash', forms: 'list', crm: 'trending-up', league: 'ball', tables: 'grid', rentals: 'key', trails: 'flag', karaoke: 'mic', printfarm: 'printer', gamebuilder: 'gamepad', sky: 'moon',
 }
 export const appIcon = (slug: string) => ICONS[slug] || 'layers'
 

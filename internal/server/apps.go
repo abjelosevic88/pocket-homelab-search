@@ -57,6 +57,9 @@ var pocketApps = []pocketApp{
 	{slug: "math", name: "Pocket Math", bang: "math", aliases: []string{"calc", "sum"}, reason: "Search your maths notebooks, ready calculations and kept answers beside the web — and see a sum you typed (100 EUR in BAM, 60 mph to km/h, 20% off 80) worked out exactly",
 		search: &appSearch{scope: "math:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "results",
 			id: f("id"), title: f("title"), snippet: f("line", "subtitle"), routeOf: mathRoute, kindOf: mathKind, kind: "notebook"}},
+	{slug: "sky", name: "Pocket Sky", bang: "sky", aliases: []string{"stars", "astro"}, reason: "Search the night sky (planets, stars, galaxies, constellations) and your observing log beside the web, each opening on Pocket Sky's star map or log",
+		search: &appSearch{scope: "sky:read", path: "/api/v1/search", q: "q", list: "results",
+			id: f("id"), title: f("title"), snippet: f("snippet"), date: f("date"), routeOf: skyRoute, kindOf: skyKind, kind: "sky"}},
 	{slug: "puzzlecraft", name: "Pocket Puzzlecraft", bang: "puzzles", aliases: []string{"puzzle", "pz"}, reason: "Search your puzzles, escape rooms, puzzle books and word lists beside the web, and keep words you found as a word list to make puzzles from",
 		search: &appSearch{scope: "puzzlecraft:read", path: "/api/v1/search", q: "q", list: "results",
 			id: f("id"), title: f("title"), snippet: f("snippet"), date: f("date"), routeOf: puzzlecraftRoute, kindOf: puzzlecraftKind, kind: "puzzle"},
@@ -199,6 +202,27 @@ func puzzlecraftKind(row map[string]any) string {
 
 // mathRoute is a Pocket Math result's page (a notebook, a calculation, a
 // kept answer, or a sum worked out on the start page).
+func skyRoute(row map[string]any) string {
+	if p := pick(row, f("url")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
+		return p
+	}
+	return "/"
+}
+
+func skyKind(row map[string]any) string {
+	switch pick(row, f("kind")) {
+	case "observation":
+		return "night logged"
+	case "planet", "moon", "sun":
+		return "planet"
+	case "constellation":
+		return "constellation"
+	case "dso":
+		return "deep sky"
+	}
+	return "star"
+}
+
 func mathRoute(row map[string]any) string {
 	if p := pick(row, f("path")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
 		return p

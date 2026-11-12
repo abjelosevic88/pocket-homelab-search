@@ -1240,3 +1240,31 @@ func TestYourAppsGameBuilder(t *testing.T) {
 		t.Fatal("!gamebuilder and !mygames do not both search Pocket Game Builder")
 	}
 }
+
+// Pocket Sky: objects of the sky open on its star map, nights on its log; !sky searches it.
+func TestYourAppsSky(t *testing.T) {
+	a := newApp(t)
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"results":[{"id":"saturn","kind":"planet","title":"Saturn","snippet":"Planet. The ringed planet","url":"/map?object=saturn"},{"id":"log:3","kind":"observation","title":"Night of 2026-11-01","snippet":"Saturn, M31","date":"2026-11-01","url":"/log/3"}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"sky": map[string]any{"mode": "direct", "url": sib.URL, "token": "psky_secret", "public": "https://sky.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=saturn&app=sky", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("items = %v", items)
+	}
+	first := items[0].(map[string]any)
+	if !strings.Contains(fmt.Sprint(first["url"]), "sky.example/map?object=saturn") || first["kind"] != "planet" {
+		t.Fatalf("first = %v", first)
+	}
+	if second := items[1].(map[string]any); second["kind"] != "night logged" {
+		t.Fatalf("second = %v", second)
+	}
+}
