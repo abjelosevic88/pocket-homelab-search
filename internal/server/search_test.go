@@ -1154,6 +1154,50 @@ func TestYourAppsKaraokeOff(t *testing.T) {
 
 // Pocket Print Farm: models, printers, filament, prints and jobs each open
 // their page in Pocket Print Farm.
+// Pocket Cameras: a camera opens its page, an event its own; the card says what
+// the event saw; !cameras, !cam and !cctv search it.
+func TestYourAppsCameras(t *testing.T) {
+	a := newApp(t)
+	var gotQuery string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"hits":[{"kind":"camera","id":3,"title":"Front door","subtitle":"Hallway · reolink","path":"/cameras/3"},{"kind":"event","id":41,"title":"A courier leaves a parcel at the front door.","subtitle":"Front door · Mon 16 Nov 11:05","date":"2026-11-16T10:05:00Z","labels":["person","parcel"],"path":"/events/41"},{"kind":"event","id":42,"title":"A fox crosses the garden.","subtitle":"Back garden · Sun 15 Nov 02:10","labels":["animal"]}]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"cameras": map[string]any{"mode": "direct", "url": sib.URL, "token": "pcam_secret", "public": "https://cameras.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=front&app=cameras", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if len(items) != 3 || !strings.Contains(gotQuery, "q=front") {
+		t.Fatalf("items = %v (query %q)", items, gotQuery)
+	}
+	want := []struct{ kind, url string }{
+		{"camera", "https://cameras.example/cameras/3"},
+		{"parcel", "https://cameras.example/events/41"},
+		{"animal", "https://cameras.example/events/42"}, // no path: from its kind
+	}
+	for i, w := range want {
+		it := items[i].(map[string]any)
+		if it["kind"] != w.kind || it["url"] != w.url {
+			t.Errorf("item %d = %v", i, it)
+		}
+	}
+	found := 0
+	for _, b := range appBangs() {
+		if (b.Trigger == "cameras" || b.Trigger == "cam" || b.Trigger == "cctv") && b.URL == "/search?cat=apps&app=cameras&q={q}" {
+			found++
+		}
+	}
+	if found != 3 {
+		t.Fatalf("!cameras, !cam and !cctv: %d found", found)
+	}
+}
+
 func TestYourAppsPrintFarm(t *testing.T) {
 	a := newApp(t)
 	var gotQuery string

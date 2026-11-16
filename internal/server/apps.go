@@ -119,6 +119,9 @@ var pocketApps = []pocketApp{
 	{slug: "booking", name: "Pocket Booking", bang: "book", aliases: []string{"booking"}, reason: "Search the bookings people made with you (by who booked or what for) and your booking pages beside the web, each opening in Pocket Booking",
 		search: &appSearch{scope: "booking:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "items",
 			id: f("id"), title: f("title"), snippet: f("subtitle"), date: f("date"), routeOf: bookingRoute, kindOf: bookingKind, kind: "booking"}},
+	{slug: "cameras", name: "Pocket Cameras", bang: "cameras", aliases: []string{"cam", "cctv"}, reason: "Find your cameras and what they saw: people, cars, parcels, animals and doorbell rings",
+		search: &appSearch{scope: "cameras:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "hits",
+			id: f("id"), title: f("title"), snippet: f("subtitle"), date: f("date"), routeOf: camerasRoute, kindOf: camerasKind, kind: "event"}},
 	{slug: "crm", name: "Pocket CRM", bang: "crm", reason: "Search your deals beside the web",
 		search: &appSearch{scope: "crm:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "deals",
 			id: f("id"), title: f("title"), snippet: f("company", "contact_name", "next_action"), snippetOf: crmLine, date: f("updated_at"),
@@ -524,6 +527,38 @@ func noteMarkdown(in sendIn) string {
 		b.WriteString("_Found searching for “" + in.Query + "” in Pocket Search._\n")
 	}
 	return b.String()
+}
+
+// camerasRoute is a Pocket Cameras result's page: its own path (a camera or
+// an event), else from its kind.
+func camerasRoute(row map[string]any) string {
+	if p := pick(row, f("path")); strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "{}") {
+		return p
+	}
+	switch pick(row, f("kind")) {
+	case "camera":
+		return "/cameras/{id}"
+	case "event":
+		return "/events/{id}"
+	}
+	return "/"
+}
+
+// camerasKind: what the card says it is — a camera, or what an event saw.
+func camerasKind(row map[string]any) string {
+	if pick(row, f("kind")) == "camera" {
+		return "camera"
+	}
+	if ls, ok := row["labels"].([]any); ok {
+		for _, want := range []string{"parcel", "person", "vehicle", "animal"} {
+			for _, l := range ls {
+				if l == want {
+					return want
+				}
+			}
+		}
+	}
+	return "event"
 }
 
 // printfarmRoute is a Pocket Print Farm result's page: its own path (a
