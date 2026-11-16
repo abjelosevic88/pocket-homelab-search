@@ -1268,3 +1268,40 @@ func TestYourAppsSky(t *testing.T) {
 		t.Fatalf("second = %v", second)
 	}
 }
+
+// Pocket Booking: bookings open on their page in Booking, booking pages on theirs; !book and !booking search it.
+func TestYourAppsBooking(t *testing.T) {
+	a := newApp(t)
+	var got string
+	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		got = r.URL.Query().Get("q")
+		_, _ = io.WriteString(w, `{"items":[{"kind":"booking","id":41,"title":"Intro call — Ana Marić","subtitle":"Wed 18 Nov 10:00 · waits for you","date":"2026-11-18","url":"https://booking.example/bookings/41"},{"kind":"type","id":3,"title":"Intro call","subtitle":"30 min · video","date":"","url":"https://booking.example/b/intro-call-k2f9"}],"bookings":[],"types":[]}`)
+	}))
+	t.Cleanup(sib.Close)
+	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
+		"booking": map[string]any{"mode": "direct", "url": sib.URL, "token": "pbkg_secret", "public": "https://booking.example"},
+	}})
+	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=intro&app=booking", nil)
+	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
+	if got != "intro" || len(items) != 2 {
+		t.Fatalf("q = %q, items = %v", got, items)
+	}
+	first := items[0].(map[string]any)
+	if fmt.Sprint(first["url"]) != "https://booking.example/bookings/41" || first["kind"] != "booking" || first["date"] != "2026-11-18" || !strings.Contains(fmt.Sprint(first["snippet"]), "waits for you") {
+		t.Fatalf("first = %v", first)
+	}
+	if second := items[1].(map[string]any); fmt.Sprint(second["url"]) != "https://booking.example/types/3" || second["kind"] != "booking page" {
+		t.Fatalf("second = %v", second)
+	}
+	bangs := map[string]string{}
+	for _, b := range appBangs() {
+		bangs[b.Trigger] = b.URL
+	}
+	if !strings.Contains(bangs["book"], "app=booking") || !strings.Contains(bangs["booking"], "app=booking") {
+		t.Fatal("!book and !booking do not both search Pocket Booking")
+	}
+}

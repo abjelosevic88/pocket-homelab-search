@@ -116,6 +116,9 @@ var pocketApps = []pocketApp{
 	{slug: "forms", name: "Pocket Forms", bang: "forms", reason: "Search your forms and the answers people sent beside the web",
 		search: &appSearch{scope: "forms:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "items",
 			id: f("id"), title: f("title"), snippet: f("subtitle"), date: f("date"), routeOf: formsRoute, kindOf: formsKind, kind: "form"}},
+	{slug: "booking", name: "Pocket Booking", bang: "book", aliases: []string{"booking"}, reason: "Search the bookings people made with you (by who booked or what for) and your booking pages beside the web, each opening in Pocket Booking",
+		search: &appSearch{scope: "booking:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "items",
+			id: f("id"), title: f("title"), snippet: f("subtitle"), date: f("date"), routeOf: bookingRoute, kindOf: bookingKind, kind: "booking"}},
 	{slug: "crm", name: "Pocket CRM", bang: "crm", reason: "Search your deals beside the web",
 		search: &appSearch{scope: "crm:read", path: "/api/v1/search", q: "q", extra: url.Values{"limit": {"8"}}, list: "deals",
 			id: f("id"), title: f("title"), snippet: f("company", "contact_name", "next_action"), snippetOf: crmLine, date: f("updated_at"),
@@ -167,6 +170,22 @@ func formsRoute(row map[string]any) string {
 		return "/answers/{id}"
 	}
 	return "/forms/{id}"
+}
+
+// bookingRoute: a booking's page in Pocket Booking, or a booking page's.
+func bookingRoute(row map[string]any) string {
+	if pick(row, f("kind")) == "type" {
+		return "/types/{id}"
+	}
+	return "/bookings/{id}"
+}
+
+// bookingKind: "booking" or "booking page" on the card.
+func bookingKind(row map[string]any) string {
+	if pick(row, f("kind")) == "type" {
+		return "booking page"
+	}
+	return "booking"
 }
 
 // formsKind: "answer" or "form" on the card.
