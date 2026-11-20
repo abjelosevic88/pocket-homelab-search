@@ -62,8 +62,9 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
-// handleImport takes a Pocket Search export (site rules and bangs are
-// merged; history only when ?history=1). Importing twice changes nothing.
+// handleImport takes a Pocket Search export (site rules, bangs and lenses
+// are added, a site that already has a rule keeps it; history only when
+// ?history=1, or on /import/all). Importing twice changes nothing.
 // A plain list of domains ("one per line", or "domain action") becomes rules.
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -78,6 +79,23 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]int{"rules": 0, "bangs": 0, "history": 0, "lenses": 0, "skipped": 0}
+	// a site that already has a rule keeps it: an import only adds
+	haveRule := map[string]bool{}
+	if rules, err := s.store.ListRules(ctx, uid); err == nil {
+		for _, rule := range rules {
+			haveRule[store.NormDomain(rule.Domain)] = true
+		}
+	}
+	addRule := func(rule *store.SiteRule) {
+		if validRule(rule) != "" || haveRule[store.NormDomain(rule.Domain)] {
+			out["skipped"]++
+			return
+		}
+		if err := s.store.SetRule(ctx, uid, rule); err == nil {
+			haveRule[rule.Domain] = true
+			out["rules"]++
+		}
+	}
 	trimmed := strings.TrimSpace(string(body))
 	if strings.HasPrefix(trimmed, "{") {
 		var doc exportDoc
@@ -87,13 +105,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, rule := range doc.Rules {
 			rule := rule
-			if validRule(&rule) != "" {
-				out["skipped"]++
-				continue
-			}
-			if err := s.store.SetRule(ctx, uid, &rule); err == nil {
-				out["rules"]++
-			}
+			addRule(&rule)
 		}
 		for _, b := range doc.Bangs {
 			b := b
@@ -128,7 +140,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if queryBool(r, "history") {
+		if queryBool(r, "history") || strings.HasSuffix(r.URL.Path, "/import/all") {
 			for _, h := range doc.History {
 				var n int
 				_ = s.store.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM history WHERE user_id = ? AND kind = ? AND query = ? AND url = ? AND created_at = ?`, uid, h.Kind, h.Query, h.URL, h.CreatedAt).Scan(&n)
@@ -159,13 +171,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 				rule.Action = strings.ToLower(f[1])
 			}
 		}
-		if validRule(&rule) != "" {
-			out["skipped"]++
-			continue
-		}
-		if err := s.store.SetRule(ctx, uid, &rule); err == nil {
-			out["rules"]++
-		}
+		addRule(&rule)
 	}
 	s.forgetResults(uid)
 	writeJSON(w, http.StatusOK, out)

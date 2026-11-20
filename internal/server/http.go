@@ -113,6 +113,8 @@ func (s *Server) Router() http.Handler {
 			r.Get("/backup", s.handleBackup)
 			r.Get("/export.json", s.handleExportJSON)
 			r.Post("/import", s.handleImport)
+			r.Post("/import/all", s.handleImport) // with the history (Pocket Move)
+			r.Get("/pocket/portable", portable.Handler())
 		})
 	})
 

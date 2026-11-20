@@ -29,7 +29,9 @@ JSON over HTTP under `/api/v1`. Authenticate with the session cookie (the UI), o
 
 `GET /apps` (connected Pocket apps and how) · `POST /apps/{slug}/disconnect` · `POST /send/{app} {url, title, snippet, query, note}` (Reader, Notes, Tasks, Lookout, Wishlist) · `GET /saves`
 
-`GET /dashboard` (searches today/this week, rules, bangs, saves, recent searches — for Homepage widgets) · `GET /export.json` · `POST /import` (an export, or a text list of sites) · `GET /backup` (admin) · `GET/PUT /settings`
+`GET /dashboard` (searches today/this week, rules, bangs, saves, recent searches — for Homepage widgets) · `GET /export.json` · `POST /import` (an export, or a text list of sites; `?history=1` brings the history too; sites that already have a rule keep it) · `POST /import/all` (an export with its history) · `GET /backup` (admin) · `GET/PUT /settings`
+
+Pocket Move can copy your site rules, bangs, lenses and history out and bring them in (`GET /pocket/portable`; link scopes `move:export` / `move:import`). Imports only add; a second run of the same file adds nothing.
 
 ## Pocket Core
 

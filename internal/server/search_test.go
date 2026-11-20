@@ -51,7 +51,7 @@ func (f *fakeEngine) last() url.Values {
 	return f.asked[len(f.asked)-1]
 }
 
-func newApp(t *testing.T) *app {
+func newApp(t *testing.T, tweaks ...func(*config.Config)) *app {
 	t.Helper()
 	cfg := testConfig(t.TempDir())
 	cfg.FetchPrivate = true // the fake site runs on localhost
@@ -105,6 +105,9 @@ func newApp(t *testing.T) *app {
 	}))
 	t.Cleanup(f.srv.Close)
 	cfg.SearXNGURL = f.srv.URL
+	for _, tweak := range tweaks {
+		tweak(cfg)
+	}
 	st := openTestStore(t, cfg)
 	ctx := context.Background()
 	a := &app{t: t, st: st, ids: map[string]int64{}, eng: f}
