@@ -150,7 +150,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			if _, ok := appBySlug(slug); !ok {
 				// an app found through Pocket Core (capable.go): Pocket Core or
 				// off and the in-results switch, never an address and a token
-				found, ok := s.discoveredApp(r.Context(), me, slug)
+				found, ok := s.capableApp(r.Context(), me, slug)
 				if !ok {
 					continue
 				}

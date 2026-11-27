@@ -725,8 +725,8 @@ func (s *Server) handleListBangs(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "bangs")
 		return
 	}
-	builtin := append(append([]bang{}, builtinBangs...), appBangs()...)
-	writeJSON(w, http.StatusOK, map[string]any{"mine": mine, "builtin": append(builtin, s.discoveredBangs(ctx, userFrom(ctx))...)})
+	builtin := append([]bang{}, builtinBangs...)
+	writeJSON(w, http.StatusOK, map[string]any{"mine": mine, "builtin": append(builtin, s.personAppBangs(ctx, userFrom(ctx))...)})
 }
 
 func (s *Server) handleCreateBang(w http.ResponseWriter, r *http.Request) {

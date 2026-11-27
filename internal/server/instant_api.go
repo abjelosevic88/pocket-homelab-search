@@ -63,10 +63,10 @@ func (s *Server) appsAnswer(ctx context.Context, u *store.User, st store.Setting
 
 func (s *Server) sibling(ctx context.Context, u *store.User, st store.Settings, slug string) (*siblingConn, pocketApp) {
 	a, ok := appBySlug(slug)
-	if !ok || a.search == nil {
+	if !ok || a.answer == "" {
 		return nil, a
 	}
-	sib, err := s.siblingFor(ctx, u, st, a, a.search.scope)
+	sib, err := s.siblingFor(ctx, u, st, a, a.answer)
 	if err != nil {
 		return nil, a
 	}

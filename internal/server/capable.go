@@ -19,13 +19,14 @@ import (
 //
 // An app that declares the search capability in its manifest
 // (docs/capabilities.md in pocket-homelab-core) answers on one fixed route in
-// one shape, so it needs no entry in apps.go: Search asks Core which apps
-// offer pocket:search and how the link to each stands for the person, and
-// searches them through the contract. An app in the table that offers the
-// capability is searched the same way once its link is on; until then, and
-// for every app that has not adopted the contract, the table's adapter stays.
-// Without Pocket Core (or with one that does not know capabilities yet)
-// nothing is found here and everything works as before.
+// one shape: Search asks Core which apps offer pocket:search and how the link
+// to each stands for the person, and searches them through the contract,
+// with the bangs their manifests bring. That is the only way Search searches
+// a Pocket app; apps.go only says where a result can be sent and where an
+// instant answer comes from. A person who reaches one of those apps directly
+// (their own address and token, also without Pocket Core) has it searched on
+// the same route. Without Pocket Core, or with one that does not know
+// capabilities yet, nothing is found through Core.
 
 const (
 	capableTTL  = 30 * time.Second // how long a person's list is kept
@@ -121,24 +122,9 @@ func capableBySlug(apps []core.CapableApp) map[string]core.CapableApp {
 	return out
 }
 
-// discoveredOf picks the searchable apps Search has no table entry for: the
-// ones found through Pocket Core on their own.
-func discoveredOf(capable []core.CapableApp) []core.CapableApp {
-	var out []core.CapableApp
-	for _, a := range capable {
-		if _, ok := appBySlug(a.App); !ok {
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-func (s *Server) discoveredApps(ctx context.Context, u *store.User) []core.CapableApp {
-	return discoveredOf(s.capableApps(ctx, u))
-}
-
-func (s *Server) discoveredApp(ctx context.Context, u *store.User, slug string) (core.CapableApp, bool) {
-	for _, a := range s.discoveredApps(ctx, u) {
+// capableApp is one app that offers the search capability for the person.
+func (s *Server) capableApp(ctx context.Context, u *store.User, slug string) (core.CapableApp, bool) {
+	for _, a := range s.capableApps(ctx, u) {
 		if a.App == slug {
 			return a, true
 		}
@@ -165,7 +151,7 @@ func capReason(a core.CapableApp) string {
 }
 
 // capOffText says in plain words why the link to the app does not work for
-// the person (the same sentences as for the table's apps).
+// the person (the same sentences as for the table's own links).
 func capOffText(name, state, detail string) string {
 	if t := linkReason(name, state); t != "" {
 		return t
@@ -173,8 +159,9 @@ func capOffText(name, state, detail string) string {
 	return firstNonEmpty(detail, state, "the link is not switched on in Pocket Core")
 }
 
-// discoveredMode is the mode in effect for an app found through Core: Pocket
-// Core, unless the person switched it off here. There is no direct connection.
+// discoveredMode is the mode in effect for an app found through Core and not
+// in the table: Pocket Core, unless the person switched it off here. There
+// is no direct connection.
 func discoveredMode(c store.AppConn) string {
 	if c.Mode == modeOff {
 		return modeOff
@@ -184,20 +171,22 @@ func discoveredMode(c store.AppConn) string {
 
 // ---- searching through the contract ----
 
-// searchTarget is one app to search for a person: a table entry, an app found
-// through Core, or both (a table app that also offers the capability).
+// searchTarget is one app to search for a person: an app that offers the
+// search capability, one of the table's apps the person reaches directly, or
+// both.
 type searchTarget struct {
 	slug  string
-	table *pocketApp       // nil = found through Core only
-	cap   *core.CapableApp // nil = does not offer the capability
+	table *pocketApp       // nil = not in the table
+	cap   *core.CapableApp // nil = not offered through Pocket Core
 }
 
-// searchTargets lists what a search of the person's apps covers: the table's
-// apps in their usual order, then the ones found through Core by name. An app
-// the person left out of the results is skipped unless it was asked for by name.
+// searchTargets lists what a search of the person's apps covers: the apps
+// that offer the search capability, by name, then the table's apps the
+// person reaches directly that Core did not name (without Pocket Core: all
+// of them). An app the person left out of the results is skipped unless it
+// was asked for by name.
 func (s *Server) searchTargets(ctx context.Context, u *store.User, st store.Settings, only string) []searchTarget {
 	capable := s.capableApps(ctx, u)
-	bySlug := capableBySlug(capable)
 	wanted := func(slug string) bool {
 		if only != "" {
 			return slug == only
@@ -206,48 +195,45 @@ func (s *Server) searchTargets(ctx context.Context, u *store.User, st store.Sett
 		return c.Search == nil || *c.Search
 	}
 	var out []searchTarget
-	for i := range pocketApps {
-		a := &pocketApps[i]
-		if a.search == nil || !wanted(a.slug) {
+	named := map[string]bool{}
+	for i := range capable {
+		c := capable[i]
+		named[c.App] = true
+		if !wanted(c.App) {
 			continue
 		}
-		t := searchTarget{slug: a.slug, table: a}
-		if c, ok := bySlug[a.slug]; ok {
-			t.cap = &c
+		t := searchTarget{slug: c.App, cap: &c}
+		for j := range pocketApps {
+			if pocketApps[j].slug == c.App {
+				t.table = &pocketApps[j]
+			}
 		}
 		out = append(out, t)
 	}
-	for i := range capable {
-		c := capable[i]
-		if _, ok := appBySlug(c.App); ok || !wanted(c.App) {
+	for i := range pocketApps {
+		a := &pocketApps[i]
+		c := st.Apps[a.slug]
+		if named[a.slug] || !wanted(a.slug) || s.connMode(c.Mode, c.Token) != modeDirect {
 			continue
 		}
-		out = append(out, searchTarget{slug: c.App, cap: &c})
+		out = append(out, searchTarget{slug: a.slug, table: a})
 	}
 	return out
 }
 
-// searchOne searches one app the way that fits it for the person.
+// searchOne searches one app the way that fits it for the person: directly
+// when they connected it that way, else through Pocket Core.
 func (s *Server) searchOne(ctx context.Context, u *store.User, st store.Settings, t searchTarget, q string, limit int) appSection {
 	c := st.Apps[t.slug]
-	if t.table != nil {
-		// the contract only where Search reaches the app through Core and the
-		// capability's link is on; a direct connection, a switched-off app and
-		// a link that is not on yet keep the table's adapter
-		if t.cap == nil || !t.cap.On || s.connMode(c.Mode, c.Token) != modeCore {
-			return s.searchApp(ctx, u, st, *t.table, q, limit)
-		}
-		sec, linkOff := s.searchCapable(ctx, u, *t.cap, t.table.name, "", c.Public, q, limit)
-		if linkOff {
-			// switched off since the list was read
-			s.forgetCapable(u)
-			return s.searchApp(ctx, u, st, *t.table, q, limit)
-		}
-		return sec
+	if t.table != nil && s.connMode(c.Mode, c.Token) == modeDirect {
+		return s.searchDirect(ctx, u, st, *t.table, q, limit)
 	}
 	name := capName(*t.cap)
+	if t.table != nil {
+		name = t.table.name
+	}
 	sec := appSection{App: t.slug, Name: name, Icon: t.cap.Icon, Items: []appItem{}}
-	if discoveredMode(c) == modeOff {
+	if c.Mode == modeOff {
 		sec.Error, sec.Off = name+" is switched off in Settings → Connected apps", true
 		return sec
 	}
@@ -255,8 +241,9 @@ func (s *Server) searchOne(ctx context.Context, u *store.User, st store.Settings
 		sec.Error, sec.Off = name+" is not set up: "+capOffText(name, t.cap.State, t.cap.Detail), true
 		return sec
 	}
-	sec, linkOff := s.searchCapable(ctx, u, *t.cap, name, t.cap.Icon, "", q, limit)
+	sec, linkOff := s.searchCapable(ctx, u, *t.cap, name, t.cap.Icon, c.Public, q, limit)
 	if linkOff {
+		// switched off since the list was read
 		s.forgetCapable(u)
 	}
 	return sec
@@ -285,19 +272,32 @@ func (s *Server) searchCapable(ctx context.Context, u *store.User, a core.Capabl
 		}
 		return sec, false
 	}
-	// the app's own order, unless it scored its matches: then higher first
-	for _, it := range items {
-		if it.Score != 0 {
-			sort.SliceStable(items, func(i, j int) bool { return items[i].Score > items[j].Score })
-			break
-		}
-	}
 	public := capPublic(a)
 	ownPublic = strings.TrimRight(ownPublic, "/")
 	kind := ""
 	if a.Search != nil && len(a.Search.Kinds) == 1 {
 		kind = a.Search.Kinds[0] // an app with one kind of thing need not repeat it on every item
 	}
+	sec.Items = appItems(items, public, ownPublic, kind, q, limit)
+	if more := firstNonEmpty(ownPublic, public); more != "" {
+		sec.More = more + "/"
+	}
+	return sec, false
+}
+
+// appItems are an app's matches as shown, at most limit of them: the app's
+// own order unless it scored them (then higher first), an item without a
+// title or address left out, an item without a page opening the app
+// (public), and the person's own browser address for the app (ownPublic)
+// put in front of its pages when they set one.
+func appItems(items []core.SearchItem, public, ownPublic, kind, q string, limit int) []appItem {
+	for _, it := range items {
+		if it.Score != 0 {
+			sort.SliceStable(items, func(i, j int) bool { return items[i].Score > items[j].Score })
+			break
+		}
+	}
+	out := []appItem{}
 	for _, x := range items {
 		it := appItem{Title: strings.TrimSpace(x.Title), Snippet: cleanSnippet(x.Snippet), Date: x.Date, URL: x.URL, Link: x.Link, Kind: firstNonEmpty(x.Kind, kind)}
 		if it.Title == "" {
@@ -313,42 +313,38 @@ func (s *Server) searchCapable(ctx context.Context, u *store.User, a core.Capabl
 			it.URL = ownPublic + it.URL[len(public):]
 		}
 		it.Strong = strongMatch(it.Title, q)
-		sec.Items = append(sec.Items, it)
-		if len(sec.Items) >= limit {
+		out = append(out, it)
+		if len(out) >= limit {
 			break
 		}
 	}
-	if more := firstNonEmpty(ownPublic, public); more != "" {
-		sec.More = more + "/"
-	}
-	return sec, false
+	return out
 }
 
 // ---- their bangs ----
 
 var reCapBang = regexp.MustCompile(`^[a-z0-9]{2,20}$`)
 
-// takenBangs are the shortcuts that already mean something: the built-in
-// ones and those of the table's apps.
+// takenBangs are the shortcuts that already mean something: the built-in ones.
 var takenBangs = sync.OnceValue(func() map[string]bool {
 	out := map[string]bool{}
 	for _, b := range builtinBangs {
 		out[b.Trigger] = true
 	}
-	for _, b := range appBangs() {
-		out[b.Trigger] = true
-	}
 	return out
 })
 
-// capBangs gives each app found through Core the shortcuts from its manifest
-// that are free: lowercase letters and digits, 2–20 long, not a built-in
-// bang, not a table app's, not already taken by an app earlier in the list.
-// An app's own slug is its to use, whoever else asks for it. The others are
-// left out without a word.
+// capBangs gives each app that offers the search capability the shortcuts
+// from its manifest that are free: lowercase letters and digits, 2–20 long,
+// not a built-in bang, not already taken by an app earlier in the list. An
+// app's own slug is its to use, whoever else asks for it, and so are the
+// table's slugs. The others are left out without a word.
 func capBangs(apps []core.CapableApp) map[string][]string {
 	free := func(b string) bool { return reCapBang.MatchString(b) && !takenBangs()[b] }
 	owner := map[string]string{}
+	for _, a := range pocketApps {
+		owner[a.slug] = a.slug
+	}
 	for _, a := range apps {
 		if free(a.App) {
 			owner[a.App] = a.App
@@ -383,19 +379,33 @@ func contains(list []string, v string) bool {
 	return false
 }
 
-// discoveredBangs are "!recipes bread" for the apps found through Core, as
-// they stand for the person.
-func (s *Server) discoveredBangs(ctx context.Context, u *store.User) []bang {
-	apps := s.discoveredApps(ctx, u)
-	if len(apps) == 0 {
-		return nil
-	}
+// appBangs are "!recipes bread" for the person's Pocket apps: the bangs from
+// the manifests of the apps that offer the search capability, and its slug
+// ("!notes") for a table app the person reaches directly that Core did not
+// name (without Pocket Core, the only ones).
+func (s *Server) appBangs(ctx context.Context, u *store.User, st store.Settings) []bang {
+	apps := s.capableApps(ctx, u)
 	bangs := capBangs(apps)
 	var out []bang
+	named := map[string]bool{}
+	add := func(slug, name, trigger string) {
+		to := "/search?cat=apps&app=" + url.QueryEscape(slug)
+		out = append(out, bang{Trigger: trigger, Name: name, URL: to + "&q={q}", Home: to, Group: "Your Pocket apps"})
+	}
 	for _, a := range apps {
-		to := "/search?cat=apps&app=" + url.QueryEscape(a.App)
+		named[a.App] = true
+		name := capName(a)
+		if t, ok := appBySlug(a.App); ok {
+			name = t.name
+		}
 		for _, t := range bangs[a.App] {
-			out = append(out, bang{Trigger: t, Name: capName(a), URL: to + "&q={q}", Home: to, Group: "Your Pocket apps"})
+			add(a.App, name, t)
+		}
+	}
+	for _, a := range pocketApps {
+		c := st.Apps[a.slug]
+		if !named[a.slug] && s.connMode(c.Mode, c.Token) == modeDirect && !takenBangs()[a.slug] {
+			add(a.slug, a.name, a.slug)
 		}
 	}
 	return out

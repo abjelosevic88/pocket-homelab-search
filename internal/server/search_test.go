@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	core "github.com/abjelosevic88/pocket-homelab-core/sdk"
 	"github.com/abjelosevic88/pocket-homelab-search/internal/config"
 	"github.com/abjelosevic88/pocket-homelab-search/internal/engine"
 	"github.com/abjelosevic88/pocket-homelab-search/internal/read"
@@ -446,33 +447,29 @@ func TestEnginePickAndAppsTable(t *testing.T) {
 	if got := engine.Pick(all, "images", []string{"a"}, nil); got != nil {
 		t.Fatalf("a change elsewhere → %v", got)
 	}
+	// the table only holds what the search capability does not cover: a
+	// result sent to an app, an instant answer read from it
 	seen := map[string]bool{}
-	bangs := map[string]bool{}
-	for _, b := range builtinBangs {
-		bangs[b.Trigger] = true
-	}
 	for _, a := range pocketApps {
 		if seen[a.slug] {
 			t.Fatalf("app %s twice", a.slug)
 		}
 		seen[a.slug] = true
-		if a.search == nil && a.send == nil {
+		if a.answer == "" && a.send == nil {
 			t.Fatalf("app %s does nothing", a.slug)
 		}
-		if a.search != nil && (bangs[a.bang] || a.bang == "") {
-			t.Fatalf("app %s bang %q missing or clashes with a built-in one", a.slug, a.bang)
-		}
-		bangs[a.bang] = true
-		for _, al := range a.aliases {
-			if bangs[al] || !reBangWord.MatchString("!"+al) {
-				t.Fatalf("app %s alias %q clashes or is not a bang", a.slug, al)
-			}
-			bangs[al] = true
+		if len(a.scopes()) == 0 || a.reason == "" || a.name == "" {
+			t.Fatalf("app %s: scopes %v, reason %q, name %q", a.slug, a.scopes(), a.reason, a.name)
 		}
 		for _, sc := range a.scopes() {
-			if sc == "" {
-				t.Fatalf("app %s has an empty scope", a.slug)
+			if sc == "" || sc == core.ScopeSearch {
+				t.Fatalf("app %s has scope %q", a.slug, sc)
 			}
+		}
+	}
+	for _, slug := range []string{"tasks", "calendar", "travel"} {
+		if a, ok := appBySlug(slug); !ok || a.answer == "" {
+			t.Fatalf("instant answers need %s's read scope", slug)
 		}
 	}
 }
@@ -482,15 +479,18 @@ var _ = config.Config{}
 func newFetcherForTest(private bool) *read.Fetcher { return read.NewFetcher("test", private) }
 
 // A direct connection to a fake Pocket Notes / Reader: searched beside the
-// web with the person's own token, and a result sent to Reader.
+// web with the person's own token on the search capability's route (no Pocket
+// Core on this box), and a result sent to Reader.
 func TestYourAppsDirect(t *testing.T) {
 	a := newApp(t)
 	var gotAuth, gotBody string
+	var gotQuery url.Values
 	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		switch r.URL.Path {
-		case "/api/v1/search":
-			_, _ = io.WriteString(w, `[{"id":3,"title":"Sourdough notes","snippet":"**feed** it twice","updated_at":"2026-10-30T10:00:00Z"},{"id":4,"title":"","snippet":"untitled"}]`)
+		case core.SearchPath:
+			gotQuery = r.URL.Query()
+			_, _ = io.WriteString(w, `{"items":[{"id":"3","title":"Sourdough notes","snippet":"**feed** it twice","kind":"note","date":"2026-10-30T10:00:00Z","url":"/note/3"},{"id":"4","title":"","snippet":"untitled"},{"id":"5","title":"Elsewhere","url":"https://other.example/5"}]}`)
 		case "/api/v1/saved":
 			b, _ := io.ReadAll(r.Body)
 			gotBody = string(b)
@@ -508,12 +508,27 @@ func TestYourAppsDirect(t *testing.T) {
 	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=sourdough&app=notes", nil)
 	secs := m["sections"].([]any)
 	items := secs[0].(map[string]any)["items"].([]any)
-	if len(secs) != 1 || len(items) != 1 || gotAuth != "Bearer pnt_secret" {
-		t.Fatalf("sections = %v (auth %q)", secs, gotAuth)
+	if len(secs) != 1 || len(items) != 2 || gotAuth != "Bearer pnt_secret" || gotQuery.Get("q") != "sourdough" || gotQuery.Get("limit") != "20" {
+		t.Fatalf("sections = %v (auth %q, query %v)", secs, gotAuth, gotQuery)
 	}
-	it := items[0].(map[string]any)
-	if it["url"] != "https://notes.example/note/3" || it["snippet"] != "feed it twice" || it["kind"] != "note" {
+	if it := items[0].(map[string]any); it["url"] != "https://notes.example/note/3" || it["snippet"] != "feed it twice" || it["kind"] != "note" || it["strong"] != true {
 		t.Fatalf("item = %v", it)
+	}
+	if it := items[1].(map[string]any); it["url"] != "https://other.example/5" {
+		t.Fatalf("item elsewhere = %v", it)
+	}
+	if more := secs[0].(map[string]any)["more"]; more != "https://notes.example/" {
+		t.Fatalf("more = %v", more)
+	}
+	// beside the web: the apps reached directly, each in its own section;
+	// the ones not set up say so quietly
+	all := sections(a.ok(a.alice, "GET", "/api/v1/search/apps?q=sourdough", nil))
+	if len(all) != len(pocketApps) || len(all["notes"]["items"].([]any)) != 2 || all["tasks"]["off"] != true {
+		t.Fatalf("all sections = %v", all)
+	}
+	// its bang is its name, as long as there is no Pocket Core to bring others
+	if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape("!notes bread"), nil); m["redirect"] != "/search?cat=apps&app=notes&q=bread" {
+		t.Fatalf("!notes = %v", m["redirect"])
 	}
 	// Bob has no connection: a quiet "not set up", never Alice's notes
 	m = a.ok(a.bob, "GET", "/api/v1/search/apps?q=sourdough&app=notes", nil)
@@ -538,7 +553,14 @@ func TestYourAppsDirect(t *testing.T) {
 	if code, _, _ := a.call(a.bob, "POST", "/api/v1/send/reader", map[string]any{"url": "https://example.org/a"}); code != 409 {
 		t.Fatalf("bob send without connection → %d", code)
 	}
-	if got := itemURL("https://b.example/", "/b/{board_id}/c/{id}", map[string]any{"id": 5.0, "board_id": 2.0}, []string{"id"}); got != "https://b.example/b/2/c/5" {
+	// an app Search no longer keeps a table entry for cannot be sent to
+	if code, _, _ := a.call(a.alice, "POST", "/api/v1/send/documents", map[string]any{"url": "https://example.org/a"}); code != 404 {
+		t.Fatalf("send to documents → %d", code)
+	}
+	if got := itemURL("https://b.example/", "/words?list={id}", map[string]any{"id": 5.0}, []string{"id"}); got != "https://b.example/words?list=5" {
+		t.Fatalf("route = %s", got)
+	}
+	if got := itemURL("https://x", "/note/{id}", map[string]any{"id": "a/b"}, []string{"id"}); got != "https://x/note/a%2Fb" {
 		t.Fatalf("route = %s", got)
 	}
 }
@@ -732,623 +754,5 @@ func TestInstantAnswersInSearch(t *testing.T) {
 	// Bob has no tasks connection: no answer, just results
 	if m := a.ok(a.bob, "GET", "/api/v1/search?q="+url.QueryEscape("my tasks today"), nil); m["instant"] != nil {
 		t.Fatalf("bob's instant = %v", m["instant"])
-	}
-}
-
-func TestItemURLKeepsPathSlashes(t *testing.T) {
-	row := map[string]any{"space": "home", "path": "/My docs/report 1.pdf"}
-	got := itemURL("https://drive.example.com/", "/f/{space}{path*}", row, []string{"path"})
-	if want := "https://drive.example.com/f/home/My%20docs/report%201.pdf"; got != want {
-		t.Fatalf("got %s want %s", got, want)
-	}
-	// ordinary fields still escape everything
-	if got := itemURL("https://x", "/note/{id}", map[string]any{"id": "a/b"}, []string{"id"}); got != "https://x/note/a%2Fb" {
-		t.Fatalf("got %s", got)
-	}
-}
-
-// Pocket Blog's posts (drafts too) open at the post in Blog (/posts/{id}).
-func TestYourAppsBlog(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"query":"sarajevo","results":[{"id":12,"title":"Spring in Sarajevo","snippet":"…the <b>river</b> in Sarajevo was loud","status":"published","kind":"post","date":"2026-11-06T09:30:00Z","url":"https://blog.example/spring","tags":["travel"],"link":"https://blog.example/posts/12"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"blog": map[string]any{"mode": "direct", "url": sib.URL, "token": "pbl_secret", "public": "https://blog.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=sarajevo&app=blog", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 1 || !strings.Contains(gotQuery, "q=sarajevo") || !strings.Contains(gotQuery, "limit=8") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	it := items[0].(map[string]any)
-	if it["url"] != "https://blog.example/posts/12" || it["title"] != "Spring in Sarajevo" || it["kind"] != "post" || it["date"] != "2026-11-06T09:30:00Z" || strings.Contains(it["snippet"].(string), "<b>") {
-		t.Fatalf("item = %v", it)
-	}
-}
-
-// Pocket Chat's messages read "<who> in <conversation>" and open at the
-// message in its conversation (/c/{conversation_id}?m={id}).
-func TestYourAppsChat(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"query":"ferry","results":[{"id":"m41","conversation_id":"c7","kind":"text","body":"Let's take the early ferry to Hvar on Saturday","snippet":"…the early <b>ferry</b> to Hvar","author_name":"Ana","conversation_title":"Weekend plans","created_at":"2026-11-06T08:15:00Z"},{"id":"m42","conversation_id":"c8","kind":"text","body":"ferry tickets?","snippet":"<b>ferry</b> tickets?","author_name":"Marko","conversation_title":"","created_at":"2026-11-05T18:00:00Z"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"chat": map[string]any{"mode": "direct", "url": sib.URL, "token": "pcx_secret", "public": "https://chat.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=ferry&app=chat", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 2 || !strings.Contains(gotQuery, "q=ferry") || !strings.Contains(gotQuery, "limit=8") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	it := items[0].(map[string]any)
-	if it["url"] != "https://chat.example/c/c7?m=m41" || it["title"] != "Ana in Weekend plans" || it["kind"] != "message" || it["date"] != "2026-11-06T08:15:00Z" || it["snippet"] != "…the early ferry to Hvar" {
-		t.Fatalf("item = %v", it)
-	}
-	// no conversation title: the author alone
-	if it := items[1].(map[string]any); it["title"] != "Marko" || it["url"] != "https://chat.example/c/c8?m=m42" {
-		t.Fatalf("item = %v", it)
-	}
-}
-
-// Pocket Forms' forms and answers: an answer reads "<who> — <form>" with its
-// line and opens in the Forms inbox (/answers/{id}), a form in Forms (/forms/{id}).
-func TestYourAppsForms(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"items":[{"kind":"form","id":2,"title":"Client brief","subtitle":"Form · 7 answers","url":"https://forms.example/forms/2"},{"kind":"response","id":41,"title":"Ana Kovač — Client brief","subtitle":"A new website for the bakery","date":"2026-11-07T09:12:00Z","url":"https://forms.example/answers/41"}],"forms":[{"id":2,"title":"Client brief"}],"responses":[{"id":41,"form":"Client brief"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"forms": map[string]any{"mode": "direct", "url": sib.URL, "token": "pfm_secret", "public": "https://forms.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=brief&app=forms", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 2 || !strings.Contains(gotQuery, "q=brief") || !strings.Contains(gotQuery, "limit=8") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	if it := items[0].(map[string]any); it["url"] != "https://forms.example/forms/2" || it["title"] != "Client brief" || it["kind"] != "form" || it["snippet"] != "Form · 7 answers" {
-		t.Fatalf("form = %v", it)
-	}
-	if it := items[1].(map[string]any); it["url"] != "https://forms.example/answers/41" || it["title"] != "Ana Kovač — Client brief" || it["kind"] != "answer" || it["date"] != "2026-11-07T09:12:00Z" || it["snippet"] != "A new website for the bakery" {
-		t.Fatalf("answer = %v", it)
-	}
-}
-
-// Pocket CRM's deals: a deal reads its title with "<stage> · <amount> · <who>
-// (<company>)" and opens in Pocket CRM (/deals/{id}).
-func TestYourAppsCRM(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"deals":[{"id":4,"title":"Online shop for cakes","stage_name":"Proposal sent","status":"open","value":450000,"amount":4500,"currency":"EUR","contact_name":"Ana Marić","company":"Pekara Marić","next_action":"Call back","next_due":"2026-11-09","updated_at":"2026-11-07T09:12:00Z","url":"https://crm.example/deals/4"},{"id":9,"title":"Cake stand","stage_name":"Won","status":"won","amount":1234.5,"currency":"BAM","contact_name":"","company":"Pekara Marić","url":"https://crm.example/deals/9"},{"id":10,"title":"Bare deal","stage_name":"Lead","status":"open","amount":0,"currency":"EUR","url":"https://crm.example/deals/10"}],"total":3}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"crm": map[string]any{"mode": "direct", "url": sib.URL, "token": "pcr_secret", "public": "https://crm.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=cake&app=crm", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 3 || !strings.Contains(gotQuery, "q=cake") || !strings.Contains(gotQuery, "limit=8") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	if it := items[0].(map[string]any); it["url"] != "https://crm.example/deals/4" || it["title"] != "Online shop for cakes" || it["kind"] != "deal" || it["snippet"] != "Proposal sent · 4,500 EUR · Ana Marić (Pekara Marić)" || it["date"] != "2026-11-07T09:12:00Z" {
-		t.Fatalf("deal = %v", it)
-	}
-	if it := items[1].(map[string]any); it["snippet"] != "Won · 1,234.50 BAM · Pekara Marić" || it["url"] != "https://crm.example/deals/9" {
-		t.Fatalf("won deal = %v", it)
-	}
-	if it := items[2].(map[string]any); it["snippet"] != "Lead" {
-		t.Fatalf("bare deal = %v", it)
-	}
-}
-
-// Pocket CRM not connected: its section says so and the rest of the search goes on.
-func TestYourAppsCRMOff(t *testing.T) {
-	a := newApp(t)
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=cake&app=crm", nil)
-	sec := m["sections"].([]any)[0].(map[string]any)
-	if sec["app"] != "crm" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
-		t.Fatalf("section = %v", sec)
-	}
-}
-
-// Pocket League: groups, games, players and chat lines, each opening its own
-// page in Pocket League; !league, !sport and !sports all search it.
-func TestYourAppsLeague(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"results":[{"kind":"group","id":1,"title":"Tuesday Tennis","subtitle":"Tennis · 6 people","emoji":"🎾","url":"https://league.example/groups/1","path":"/groups/1"},{"kind":"game","id":31,"title":"Tennis · Tuesday Tennis","subtitle":"Tue 10 Nov, 20:00 · TK Koševo","emoji":"🎾","url":"https://league.example/games/31","path":"/games/31","at":"2026-11-10T20:00"},{"kind":"player","id":2,"title":"Marko Petrović","subtitle":"plays in Tuesday Tennis","emoji":"🎾","url":"https://league.example/groups/1/players/2","path":"/groups/1/players/2"},{"kind":"message","id":7,"title":"Tennis on Tuesday, who's bringing balls?","subtitle":"Marko Petrović in Tuesday Tennis","emoji":"🎾","url":"https://league.example/groups/1?tab=chat","path":"/groups/1?tab=chat","at":"2026-11-06T18:00:00Z"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"league": map[string]any{"mode": "direct", "url": sib.URL, "token": "plg_secret", "public": "https://league.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=tennis&app=league", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 4 || !strings.Contains(gotQuery, "q=tennis") || !strings.Contains(gotQuery, "limit=8") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	want := []struct{ kind, url, snippet string }{
-		{"group", "https://league.example/groups/1", "Tennis · 6 people"},
-		{"game", "https://league.example/games/31", "Tue 10 Nov, 20:00 · TK Koševo"},
-		{"player", "https://league.example/groups/1/players/2", "plays in Tuesday Tennis"},
-		{"message", "https://league.example/groups/1?tab=chat", "Marko Petrović in Tuesday Tennis"},
-	}
-	for i, w := range want {
-		if it := items[i].(map[string]any); it["kind"] != w.kind || it["url"] != w.url || it["snippet"] != w.snippet {
-			t.Fatalf("item %d = %v, want %+v", i, it, w)
-		}
-	}
-	if it := items[1].(map[string]any); it["date"] != "2026-11-10T20:00" || it["title"] != "Tennis · Tuesday Tennis" {
-		t.Fatalf("game = %v", it)
-	}
-	for _, b := range []string{"!league tennis", "!sport tennis", "tennis !sports"} {
-		if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape(b), nil); m["redirect"] != "/search?cat=apps&app=league&q=tennis" {
-			t.Fatalf("%s → %v", b, m["redirect"])
-		}
-	}
-}
-
-// Pocket League not connected: its section says so and the rest of the search goes on.
-func TestYourAppsLeagueOff(t *testing.T) {
-	a := newApp(t)
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=tennis&app=league", nil)
-	sec := m["sections"].([]any)[0].(map[string]any)
-	if sec["app"] != "league" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
-		t.Fatalf("section = %v", sec)
-	}
-}
-
-// Pocket Tables: tables whose name matches come first and open at /t/{id};
-// rows open at /r/{id} and read "<table> in <base> · <field>: <snippet>".
-func TestYourAppsTables(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"query":"client","items":[{"id":12,"title":"Ana Marić","table_id":3,"table":"Clients","table_icon":"👥","base":"Bakery","field":"Notes","snippet":"…our best client since 2024…","url":"https://tables.example/r/12","updated_at":"2026-11-07T09:12:00Z"},{"id":13,"title":"Client list","table_id":3,"table":"Clients","base":"Clients","url":"https://tables.example/r/13"}],"tables":[{"id":3,"name":"Clients","icon":"👥","base":"Bakery","rows":12,"url":"https://tables.example/t/3"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"tables": map[string]any{"mode": "direct", "url": sib.URL, "token": "ptb_secret", "public": "https://tables.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=client&app=tables", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 3 || !strings.Contains(gotQuery, "q=client") || !strings.Contains(gotQuery, "limit=8") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	if it := items[0].(map[string]any); it["url"] != "https://tables.example/t/3" || it["title"] != "Clients" || it["kind"] != "table" || it["snippet"] != "In Bakery · 12 rows" {
-		t.Fatalf("table = %v", it)
-	}
-	if it := items[1].(map[string]any); it["url"] != "https://tables.example/r/12" || it["title"] != "Ana Marić" || it["kind"] != "row" || it["snippet"] != "Clients in Bakery · Notes: …our best client since 2024…" || it["date"] != "2026-11-07T09:12:00Z" {
-		t.Fatalf("row = %v", it)
-	}
-	if it := items[2].(map[string]any); it["snippet"] != "Clients" || it["url"] != "https://tables.example/r/13" {
-		t.Fatalf("name match = %v", it)
-	}
-	// !tables and !table both search it
-	found := map[string]bool{}
-	for _, b := range appBangs() {
-		if b.Trigger == "tables" || b.Trigger == "table" {
-			found[b.Trigger] = b.URL == "/search?cat=apps&app=tables&q={q}"
-		}
-	}
-	if !found["tables"] || !found["table"] {
-		t.Fatalf("bangs = %v", found)
-	}
-}
-
-// Pocket Tables not connected: its section says so and the rest of the search goes on.
-func TestYourAppsTablesOff(t *testing.T) {
-	a := newApp(t)
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=client&app=tables", nil)
-	sec := m["sections"].([]any)[0].(map[string]any)
-	if sec["app"] != "tables" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
-		t.Fatalf("section = %v", sec)
-	}
-}
-
-// Pocket Rentals: places, leases, tenants and repairs each open their own page
-// in Pocket Rentals and read Rentals' subtitle.
-func TestYourAppsRentals(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"results":[{"kind":"property","id":2,"title":"Obala 12","subtitle":"Obala Kulina bana 12, Sarajevo · 2 of 3 let","url":"https://rentals.example/properties/2","path":"/properties/2"},{"kind":"lease","id":3,"title":"Flat 2 — Ana Marić","subtitle":"active · €650.00 monthly · owes €500.00","url":"https://rentals.example/leases/3","path":"/leases/3"},{"kind":"tenant","id":5,"title":"Ana Marić","subtitle":"ana@example.org · +387 61 000 000","url":"https://rentals.example/tenants/5","path":"/tenants/5"},{"kind":"repair","id":9,"title":"Leaking tap","subtitle":"Flat 1, Obala 12 · in progress","url":"https://rentals.example/repairs/9"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"rentals": map[string]any{"mode": "direct", "url": sib.URL, "token": "prt_secret", "public": "https://rentals.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=obala&app=rentals", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 4 || !strings.Contains(gotQuery, "q=obala") || !strings.Contains(gotQuery, "limit=8") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	want := []struct{ kind, url, snippet string }{
-		{"property", "https://rentals.example/properties/2", "Obala Kulina bana 12, Sarajevo · 2 of 3 let"},
-		{"lease", "https://rentals.example/leases/3", "active · €650.00 monthly · owes €500.00"},
-		{"tenant", "https://rentals.example/tenants/5", "ana@example.org · +387 61 000 000"},
-		{"repair", "https://rentals.example/repairs/9", "Flat 1, Obala 12 · in progress"}, // no path: from its kind
-	}
-	for i, w := range want {
-		it := items[i].(map[string]any)
-		if it["kind"] != w.kind || it["url"] != w.url || it["snippet"] != w.snippet {
-			t.Errorf("item %d = %v", i, it)
-		}
-	}
-	// !rentals and !rent both search it
-	found := map[string]bool{}
-	for _, b := range appBangs() {
-		if b.Trigger == "rentals" || b.Trigger == "rent" {
-			found[b.Trigger] = b.URL == "/search?cat=apps&app=rentals&q={q}"
-		}
-	}
-	if !found["rentals"] || !found["rent"] {
-		t.Fatalf("bangs = %v", found)
-	}
-}
-
-// Pocket Rentals not connected: its section says so and the rest of the search goes on.
-func TestYourAppsRentalsOff(t *testing.T) {
-	a := newApp(t)
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=obala&app=rentals", nil)
-	sec := m["sections"].([]any)[0].(map[string]any)
-	if sec["app"] != "rentals" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
-		t.Fatalf("section = %v", sec)
-	}
-}
-
-// Pocket Trails: routes, outings, gear and spots each open their page in
-// Pocket Trails (a spot its route) and read Trails' subtitle.
-func TestYourAppsTrails(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"results":[{"type":"route","id":4,"title":"Trebević from Sarajevo","subtitle":"Hike · 12.4 km · 980 m up · 4 h 30 min","path":"/routes/4","url":"https://trails.example/routes/4"},{"type":"outing","id":12,"title":"Hike: Trebević from Sarajevo","subtitle":"Sat 14 Nov · planned","date":"2026-11-14","path":"/outings/12","url":"https://trails.example/outings/12"},{"type":"gear","id":3,"title":"Trebević map","subtitle":"Gear · 80 g","path":"/gear","url":"https://trails.example/gear"},{"type":"spot","id":7,"title":"Trebević hut","subtitle":"Hut on a route"},{"type":"outing","id":13,"title":"Run by the river","subtitle":"Sun 1 Nov · done"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"trails": map[string]any{"mode": "direct", "url": sib.URL, "token": "ptr_secret", "public": "https://trails.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=trebevic&app=trails", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 5 || !strings.Contains(gotQuery, "q=trebevic") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	want := []struct{ kind, url, snippet, date string }{
-		{"route", "https://trails.example/routes/4", "Hike · 12.4 km · 980 m up · 4 h 30 min", ""},
-		{"outing", "https://trails.example/outings/12", "Sat 14 Nov · planned", "2026-11-14"},
-		{"gear", "https://trails.example/gear", "Gear · 80 g", ""},
-		{"spot", "https://trails.example/", "Hut on a route", ""},               // no path: its route is not known
-		{"outing", "https://trails.example/outings/13", "Sun 1 Nov · done", ""}, // no path: from its type
-	}
-	for i, w := range want {
-		it := items[i].(map[string]any)
-		if it["kind"] != w.kind || it["url"] != w.url || it["snippet"] != w.snippet || (w.date != "" && it["date"] != w.date) {
-			t.Errorf("item %d = %v", i, it)
-		}
-	}
-	// !trails and !hike both search it
-	found := map[string]bool{}
-	for _, b := range appBangs() {
-		if b.Trigger == "trails" || b.Trigger == "hike" {
-			found[b.Trigger] = b.URL == "/search?cat=apps&app=trails&q={q}"
-		}
-	}
-	if !found["trails"] || !found["hike"] {
-		t.Fatalf("bangs = %v", found)
-	}
-}
-
-// Pocket Trails not connected: its section says so and the rest of the search goes on.
-func TestYourAppsTrailsOff(t *testing.T) {
-	a := newApp(t)
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=trebevic&app=trails", nil)
-	sec := m["sections"].([]any)[0].(map[string]any)
-	if sec["app"] != "trails" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
-		t.Fatalf("section = %v", sec)
-	}
-}
-
-// Pocket Karaoke: songs (by title, artist or a line of their words), singers
-// and nights each open their page in Pocket Karaoke; a song found by its
-// words shows the artist and the line.
-func TestYourAppsKaraoke(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"hits":[{"kind":"song","id":1,"title":"Dancing Queen","subtitle":"ABBA","snippet":"","url":"https://karaoke.example/songs/1","path":"/songs/1"},{"kind":"song","id":2,"title":"Waterloo","subtitle":"ABBA","snippet":"“My, my, at Waterloo Napoleon did surrender”","path":"/songs/2"},{"kind":"singer","id":3,"title":"Ana","subtitle":"12 songs sung","path":"/singers/3"},{"kind":"night","id":4,"title":"Friday karaoke","subtitle":"2026-11-13 21:00 Living room"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"karaoke": map[string]any{"mode": "direct", "url": sib.URL, "token": "pka_secret", "public": "https://karaoke.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=abba&app=karaoke", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 4 || !strings.Contains(gotQuery, "q=abba") || !strings.Contains(gotQuery, "limit=8") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	want := []struct{ kind, title, url, snippet string }{
-		{"song", "Dancing Queen", "https://karaoke.example/songs/1", "ABBA"},
-		{"song", "Waterloo", "https://karaoke.example/songs/2", "ABBA · “My, my, at Waterloo Napoleon did surrender”"},
-		{"singer", "Ana", "https://karaoke.example/singers/3", "12 songs sung"},
-		{"night", "Friday karaoke", "https://karaoke.example/nights/4", "2026-11-13 21:00 Living room"}, // no path: from its kind
-	}
-	for i, w := range want {
-		it := items[i].(map[string]any)
-		if it["kind"] != w.kind || it["title"] != w.title || it["url"] != w.url || it["snippet"] != w.snippet {
-			t.Errorf("item %d = %v", i, it)
-		}
-	}
-	// !karaoke and !sing both search it
-	found := map[string]bool{}
-	for _, b := range appBangs() {
-		if b.Trigger == "karaoke" || b.Trigger == "sing" {
-			found[b.Trigger] = b.URL == "/search?cat=apps&app=karaoke&q={q}"
-		}
-	}
-	if !found["karaoke"] || !found["sing"] {
-		t.Fatalf("bangs = %v", found)
-	}
-}
-
-// Pocket Karaoke not connected: its section says so and the rest of the search goes on.
-func TestYourAppsKaraokeOff(t *testing.T) {
-	a := newApp(t)
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=abba&app=karaoke", nil)
-	sec := m["sections"].([]any)[0].(map[string]any)
-	if sec["app"] != "karaoke" || len(sec["items"].([]any)) != 0 || sec["error"] == nil || sec["error"] == "" {
-		t.Fatalf("section = %v", sec)
-	}
-}
-
-// Pocket Print Farm: models, printers, filament, prints and jobs each open
-// their page in Pocket Print Farm.
-// Pocket Cameras: a camera opens its page, an event its own; the card says what
-// the event saw; !cameras, !cam and !cctv search it.
-func TestYourAppsCameras(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"hits":[{"kind":"camera","id":3,"title":"Front door","subtitle":"Hallway · reolink","path":"/cameras/3"},{"kind":"event","id":41,"title":"A courier leaves a parcel at the front door.","subtitle":"Front door · Mon 16 Nov 11:05","date":"2026-11-16T10:05:00Z","labels":["person","parcel"],"path":"/events/41"},{"kind":"event","id":42,"title":"A fox crosses the garden.","subtitle":"Back garden · Sun 15 Nov 02:10","labels":["animal"]}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"cameras": map[string]any{"mode": "direct", "url": sib.URL, "token": "pcam_secret", "public": "https://cameras.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=front&app=cameras", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 3 || !strings.Contains(gotQuery, "q=front") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	want := []struct{ kind, url string }{
-		{"camera", "https://cameras.example/cameras/3"},
-		{"parcel", "https://cameras.example/events/41"},
-		{"animal", "https://cameras.example/events/42"}, // no path: from its kind
-	}
-	for i, w := range want {
-		it := items[i].(map[string]any)
-		if it["kind"] != w.kind || it["url"] != w.url {
-			t.Errorf("item %d = %v", i, it)
-		}
-	}
-	found := 0
-	for _, b := range appBangs() {
-		if (b.Trigger == "cameras" || b.Trigger == "cam" || b.Trigger == "cctv") && b.URL == "/search?cat=apps&app=cameras&q={q}" {
-			found++
-		}
-	}
-	if found != 3 {
-		t.Fatalf("!cameras, !cam and !cctv: %d found", found)
-	}
-}
-
-func TestYourAppsPrintFarm(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"hits":[{"kind":"model","id":2,"title":"Twisted vase","subtitle":"home, vase mode · 52 printed","path":"/models/2"},{"kind":"printer","id":1,"title":"Mk4","subtitle":"Prusa MK4 · Workshop","path":"/printers/1"},{"kind":"print","id":9,"title":"Twisted vase","subtitle":"2026-11-10 · Mk4 · done"},{"kind":"job","id":4,"title":"Vase for Ana","subtitle":"in the queue, 0 of 1","path":"/queue"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"printfarm": map[string]any{"mode": "direct", "url": sib.URL, "token": "ppf_secret", "public": "https://printfarm.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=vase&app=printfarm", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 4 || !strings.Contains(gotQuery, "q=vase") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	want := []struct{ kind, url string }{
-		{"model", "https://printfarm.example/models/2"},
-		{"printer", "https://printfarm.example/printers/1"},
-		{"print", "https://printfarm.example/prints/9"}, // no path: from its kind
-		{"queued", "https://printfarm.example/queue"},
-	}
-	for i, w := range want {
-		it := items[i].(map[string]any)
-		if it["kind"] != w.kind || it["url"] != w.url {
-			t.Errorf("item %d = %v", i, it)
-		}
-	}
-	found := false
-	for _, b := range appBangs() {
-		if b.Trigger == "3d" {
-			found = b.URL == "/search?cat=apps&app=printfarm&q={q}"
-		}
-	}
-	if !found {
-		t.Fatal("!3d does not search Pocket Print Farm")
-	}
-}
-
-// Pocket Game Builder: a game opens its page, a picture, sound or music piece
-// the library; !gamebuilder and !mygames search it.
-func TestYourAppsGameBuilder(t *testing.T) {
-	a := newApp(t)
-	var gotQuery string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		gotQuery = r.URL.RawQuery
-		_, _ = io.WriteString(w, `{"results":[{"kind":"game","id":3,"title":"Cat and fish","subtitle":"catch · shared","text":"a cat catching fish","url":"https://gamebuilder.example/games/3","date":"2026-11-10"},{"kind":"image","id":7,"title":"Fish","subtitle":"picture","url":"https://gamebuilder.example/library","date":"2026-11-09"},{"kind":"sound","id":8,"title":"Splash","subtitle":"sound effect"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"gamebuilder": map[string]any{"mode": "direct", "url": sib.URL, "token": "pgb_secret", "public": "https://gamebuilder.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=fish&app=gamebuilder", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 3 || !strings.Contains(gotQuery, "q=fish") {
-		t.Fatalf("items = %v (query %q)", items, gotQuery)
-	}
-	want := []struct{ kind, url string }{
-		{"game", "https://gamebuilder.example/games/3"},
-		{"picture", "https://gamebuilder.example/library"},
-		{"sound", "https://gamebuilder.example/library"},
-	}
-	for i, w := range want {
-		it := items[i].(map[string]any)
-		if it["kind"] != w.kind || it["url"] != w.url {
-			t.Errorf("item %d = %v", i, it)
-		}
-	}
-	found := 0
-	for _, b := range appBangs() {
-		if (b.Trigger == "gamebuilder" || b.Trigger == "mygames") && b.URL == "/search?cat=apps&app=gamebuilder&q={q}" {
-			found++
-		}
-	}
-	if found != 2 {
-		t.Fatal("!gamebuilder and !mygames do not both search Pocket Game Builder")
-	}
-}
-
-// Pocket Sky: objects of the sky open on its star map, nights on its log; !sky searches it.
-func TestYourAppsSky(t *testing.T) {
-	a := newApp(t)
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		_, _ = io.WriteString(w, `{"results":[{"id":"saturn","kind":"planet","title":"Saturn","snippet":"Planet. The ringed planet","url":"/map?object=saturn"},{"id":"log:3","kind":"observation","title":"Night of 2026-11-01","snippet":"Saturn, M31","date":"2026-11-01","url":"/log/3"}]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"sky": map[string]any{"mode": "direct", "url": sib.URL, "token": "psky_secret", "public": "https://sky.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=saturn&app=sky", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if len(items) != 2 {
-		t.Fatalf("items = %v", items)
-	}
-	first := items[0].(map[string]any)
-	if !strings.Contains(fmt.Sprint(first["url"]), "sky.example/map?object=saturn") || first["kind"] != "planet" {
-		t.Fatalf("first = %v", first)
-	}
-	if second := items[1].(map[string]any); second["kind"] != "night logged" {
-		t.Fatalf("second = %v", second)
-	}
-}
-
-// Pocket Booking: bookings open on their page in Booking, booking pages on theirs; !book and !booking search it.
-func TestYourAppsBooking(t *testing.T) {
-	a := newApp(t)
-	var got string
-	sib := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		got = r.URL.Query().Get("q")
-		_, _ = io.WriteString(w, `{"items":[{"kind":"booking","id":41,"title":"Intro call — Ana Marić","subtitle":"Wed 18 Nov 10:00 · waits for you","date":"2026-11-18","url":"https://booking.example/bookings/41"},{"kind":"type","id":3,"title":"Intro call","subtitle":"30 min · video","date":"","url":"https://booking.example/b/intro-call-k2f9"}],"bookings":[],"types":[]}`)
-	}))
-	t.Cleanup(sib.Close)
-	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{
-		"booking": map[string]any{"mode": "direct", "url": sib.URL, "token": "pbkg_secret", "public": "https://booking.example"},
-	}})
-	m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=intro&app=booking", nil)
-	items := m["sections"].([]any)[0].(map[string]any)["items"].([]any)
-	if got != "intro" || len(items) != 2 {
-		t.Fatalf("q = %q, items = %v", got, items)
-	}
-	first := items[0].(map[string]any)
-	if fmt.Sprint(first["url"]) != "https://booking.example/bookings/41" || first["kind"] != "booking" || first["date"] != "2026-11-18" || !strings.Contains(fmt.Sprint(first["snippet"]), "waits for you") {
-		t.Fatalf("first = %v", first)
-	}
-	if second := items[1].(map[string]any); fmt.Sprint(second["url"]) != "https://booking.example/types/3" || second["kind"] != "booking page" {
-		t.Fatalf("second = %v", second)
-	}
-	bangs := map[string]string{}
-	for _, b := range appBangs() {
-		bangs[b.Trigger] = b.URL
-	}
-	if !strings.Contains(bangs["book"], "app=booking") || !strings.Contains(bangs["booking"], "app=booking") {
-		t.Fatal("!book and !booking do not both search Pocket Booking")
 	}
 }

@@ -50,7 +50,7 @@ export interface InstantAnswer { kind: InstantKind; title: string; value: string
 export interface Lens { id: number; name: string; icon: string; sites: string; boost: string; hide: string; words: string; language: string; position: number; created_at: string; updated_at: string }
 
 export interface AppItem { title: string; snippet: string; date?: string; url: string; link?: string; kind: string; strong?: boolean }
-/** icon: the app's own picture (an address), for an app found through Pocket Core. */
+/** icon: the app's own picture (an address), when Pocket Core names the app. */
 export interface AppSection { app: string; name: string; icon?: string; items: AppItem[]; error?: string; off?: boolean; more?: string; ms: number }
 export interface AppsResult { query: string; sections: AppSection[] }
 
@@ -60,9 +60,10 @@ export interface PocketAppConn {
   can_search: boolean; send?: string; bang?: string
   mode: 'core' | 'direct' | 'off'; via: '' | 'core' | 'direct'; detail: string
   in_results: boolean
-  /** The app's own picture (an address); empty for the apps Search knows by itself. */
+  /** The app's own picture (an address), when Pocket Core names the app; empty otherwise. */
   icon: string
-  /** Found through Pocket Core on its own (it says it can be searched): Pocket Core or off, no direct connection. */
+  /** Found through Pocket Core on its own (it says it can be searched): Pocket Core or off, no direct connection.
+   *  The others are the apps a result can be sent to or an instant answer read from: they can also be connected directly. */
   discovered: boolean
 }
 

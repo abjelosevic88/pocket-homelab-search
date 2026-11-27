@@ -48,7 +48,7 @@
 
 - **Private by design** — searches go from your server to the engines; pictures, thumbnails and site icons are fetched by the server, and pages open without a referrer, so sites never learn what you searched for or who you are.
 - **Its own engine** — `docker compose up` starts the app and SearXNG together. The engine has no port of its own and no settings file to edit; engines are switched on and off per person in Settings.
-- **Your apps in the results** — a note or document named like what you searched comes first, among the web results; everything else from your notes, saved articles, tasks, documents, calendar, contacts, mail, issues, cards, books, tabs, drawings, trips… searched at the same time as the web (with Pocket Core, nothing to paste). `!notes groceries` searches one app. A Pocket app that says it can be searched joins on its own, with its icon and its bangs: nothing to add in Search.
+- **Your apps in the results** — a note or document named like what you searched comes first, among the web results; everything else from your notes, saved articles, tasks, documents, calendar, contacts, mail, issues, books, tabs, trips… searched at the same time as the web (with Pocket Core, nothing to paste). `!notes groceries` searches one app. Every Pocket app that says it can be searched joins on its own, with its icon and its bangs: nothing to add in Search.
 - **Instant answers** — sums, unit and currency conversions, the time anywhere and the weather, worked out on your server; "my tasks today", "next trip" and "my calendar today" straight from your Pocket apps.
 - **Lenses** — one click under the search box: Recipes, Code, Forums, Local, Science, or your own — only some sites, some sites first, some never, words added, a language.
 - **Previews** — read a result's text beside the list without leaving the page.
@@ -56,7 +56,7 @@
 - **Bangs** — `!w eiffel tower`, `!yt`, `!gh`, `!m`… about 60 built in, plus your own. They work from the browser's address bar too, before the page even loads.
 - **Reading view** — open any result as clean text with pictures through your server; left-out players are counted.
 - **AI answers** — a short answer above the results with every claim numbered to its source; it can read the top three pages. Pocket AI through Pocket Core, or your own OpenAI-compatible key. Off, on a button, or automatic.
-- **Send a result** — read later in Pocket Reader, keep it as a note, add a task, watch it with Pocket Lookout, add it to your Pocket Wishlist. The result shows where it went.
+- **Send a result** — read later in Pocket Reader, keep it as a note, add a task, watch it with Pocket Lookout, add it to your Pocket Wishlist, check in Pocket Rooms whether a piece of furniture fits, make a word list in Pocket Puzzlecraft. The result shows where it went.
 - **History you control** — per person, pausable, cleared by the hour, day, week or all; forgotten after 90 days unless you choose otherwise.
 - **Everywhere** — add it as your browser's search engine (OpenSearch), install it on a phone's home screen, put it in Homepage's quick launch.
 
@@ -77,16 +77,17 @@ Try it without anything: `DEMO_DATA=true AUTH_MODE=none ./pocket-search` answers
 
 ## With Pocket Core
 
-Set `CORE_URL` and `CORE_REGISTRATION_KEY` and Search joins the box: people sign in with Pocket Core, your Pocket apps are searched and results sent to them through Core links (each one off until you switch it on, per person), and AI answers use Pocket AI. Other apps can search the web for you through Search (`search:read`), and Pocket Core's AI tools `pocket_search_web` / `pocket_search_read_page` give Pocket AI and your assistants private web search. Without Core everything works with direct app tokens and your own OpenAI key; the Core-only choices stay visible, greyed out.
+Set `CORE_URL` and `CORE_REGISTRATION_KEY` and Search joins the box: people sign in with Pocket Core, your Pocket apps are searched and results sent to them through Core links (each one off until you switch it on, per person), and AI answers use Pocket AI. Other apps can search the web for you through Search (`search:read`), and Pocket Core's AI tools `pocket_search_web` / `pocket_search_read_page` give Pocket AI and your assistants private web search. Without Core, Notes, Reader, Tasks, Lookout, Wishlist, Rooms, Puzzlecraft, Calendar and Travel can be connected directly with an address and an API token (searched, sent to, asked for instant answers), and AI answers use your own OpenAI key; the Core-only choices stay visible, greyed out.
 
 ### How an app becomes searchable
 
 An app declares the **search capability** in its Pocket Core manifest (what it finds, its kinds of things, its bangs) and answers `GET /api/v1/pocket/search?q=&limit=` in the shared shape (`docs/capabilities.md` in pocket-homelab-core). That is all: Search asks Core which apps offer it for the person (asked again every half a minute) and searches each one as that person, so a new app shows up under "From your apps", in **Settings → Connected apps** (with its own icon; Pocket Core or Off, and the "In results" switch) and with its `!bangs`, without a change in Search.
 
 - Search asks for it once, for every app ("Find your things in every app that can be searched, beside the web"): one switch for the admin in Pocket Core → Links, and each link under it still has the box's switch and each person's own. A link that is off shows the app as not connected, with the reason.
-- A bang from an app's manifest is used when it is 2–20 lowercase letters or digits and free: built-in bangs, the bangs of the apps Search already knows and another app's bang keep their meaning. Your own bangs still win.
-- The apps Search already knew are still described inside it (`internal/server/apps.go`: their own search routes and scopes), for apps that have not adopted the capability yet and for direct connections without Pocket Core. One of those that offers the capability is searched through it once that link is on for the person; with the link off, with a direct connection or without Core it is searched the old way.
-- Without Pocket Core, or with an older Core that does not know capabilities, nothing changes.
+- A bang from an app's manifest is used when it is 2–20 lowercase letters or digits and free: built-in bangs and another app's bang keep their meaning, and an app's own name (`notes`) is always its own. Your own bangs still win.
+- This is the only way Search searches a Pocket app: there are no per-app search routes or parsers inside Search any more. `internal/server/apps.go` only describes what the capability does not cover: where a result can be sent (Notes, Reader, Tasks, Lookout, Wishlist, Rooms, Puzzlecraft) and where the instant answers come from (Tasks, Calendar, Travel), with the scopes for that.
+- One of those apps connected directly (its address and an API token, also without Pocket Core) is searched on the same route with the person's own token, and its name works as its bang.
+- Without Pocket Core, or with an older Core that does not know capabilities, only the apps connected directly are searched.
 
 ## Docs
 

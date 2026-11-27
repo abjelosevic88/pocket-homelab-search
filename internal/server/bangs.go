@@ -110,21 +110,8 @@ func splitBang(q string) (trigger, rest string, ok bool) {
 	return "", "", false
 }
 
-// appBangs are "!notes groceries", one per Pocket app with a search.
-func appBangs() []bang {
-	out := []bang{}
-	for _, a := range pocketApps {
-		if a.search != nil {
-			for _, t := range append([]string{a.bang}, a.aliases...) {
-				out = append(out, bang{Trigger: t, Name: a.name, URL: "/search?cat=apps&app=" + a.slug + "&q={q}", Home: "/search?cat=apps&app=" + a.slug, Group: "Your Pocket apps"})
-			}
-		}
-	}
-	return out
-}
-
 // allBangs is everything a person can use: their own first, and last the
-// ones of the apps found through Pocket Core for them (capable.go).
+// ones of their Pocket apps (capable.go).
 func (s *Server) allBangs(ctx context.Context, u *store.User) []bang {
 	mine, _ := s.store.ListBangs(ctx, u.ID)
 	out := make([]bang, 0, len(mine)+len(builtinBangs)+16)
@@ -132,8 +119,16 @@ func (s *Server) allBangs(ctx context.Context, u *store.User) []bang {
 		out = append(out, bang{Trigger: b.Trigger, Name: b.Name, URL: b.URL, Home: homeOf(b.URL), Group: "Yours", Own: true, ID: b.ID})
 	}
 	out = append(out, builtinBangs...)
-	out = append(out, appBangs()...)
-	return append(out, s.discoveredBangs(ctx, u)...)
+	return append(out, s.personAppBangs(ctx, u)...)
+}
+
+// personAppBangs are the bangs of the person's Pocket apps.
+func (s *Server) personAppBangs(ctx context.Context, u *store.User) []bang {
+	if u == nil {
+		return nil
+	}
+	st, _ := s.store.GetSettings(ctx, u.ID)
+	return s.appBangs(ctx, u, st)
 }
 
 func homeOf(u string) string {
@@ -153,16 +148,14 @@ func (s *Server) resolveBang(ctx context.Context, u *store.User, q string) strin
 		s.store.UsedBang(ctx, u.ID, own.ID)
 		return fill(bang{URL: own.URL, Home: homeOf(own.URL)}, rest)
 	}
-	for _, list := range [][]bang{builtinBangs, appBangs()} {
-		for _, b := range list {
-			if b.Trigger == trigger {
-				return fill(b, rest)
-			}
+	for _, b := range builtinBangs {
+		if b.Trigger == trigger {
+			return fill(b, rest)
 		}
 	}
-	// a word none of those know: an app found through Pocket Core may have
+	// a word none of those know: one of the person's Pocket apps may have
 	// brought it (asked only now, so an ordinary search never waits on Core)
-	for _, b := range s.discoveredBangs(ctx, u) {
+	for _, b := range s.personAppBangs(ctx, u) {
 		if b.Trigger == trigger {
 			return fill(b, rest)
 		}

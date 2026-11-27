@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,30 +25,9 @@ import (
 // link (Search asks Core for a five-minute token acting as that person,
 // nothing to paste), directly with their own URL + API token, or not at all.
 // Core tokens are asked for per request with only the scopes the work needs
-// and never kept, so a link switched off in Core applies at once. The apps
-// themselves are described in apps.go.
-
-// appSearch says how to search one app and read its answer.
-type appSearch struct {
-	scope string
-	path  string     // GET path
-	q     string     // the query parameter
-	extra url.Values // fixed parameters (limit…)
-	list  string     // the JSON key holding the rows ("" = the answer is the list)
-	// field names in a row (dotted paths; the first non-empty wins)
-	id, title, snippet, date, link []string
-	route                          string // the item's page in the app: "/notes/{id}" ("" = the app's start page)
-	kind                           string // what a row is ("note", "task"…), shown on the card
-	// a title made of several fields (wins over title when it gives one)
-	titleOf func(row map[string]any) string
-	// rows of more than one kind: each row's page in the app and what it is
-	// (win over route and kind when they give one)
-	routeOf, kindOf func(row map[string]any) string
-	// a line made of several fields (wins over snippet when it gives one)
-	snippetOf func(row map[string]any) string
-	// rows gathered from more than one list in the answer (wins over list)
-	rowsOf func(raw any) []map[string]any
-}
+// and never kept, so a link switched off in Core applies at once. Searching
+// goes through the search capability (capable.go); the apps a result can be
+// sent to, or an instant answer read from, are described in apps.go.
 
 // appSend says how to send a result to one app.
 type appSend struct {
@@ -62,19 +42,18 @@ type appSend struct {
 
 // pocketApp is one sibling Pocket app Search acts in.
 type pocketApp struct {
-	slug, name, bang string
-	aliases          []string // more bangs for the same app ("!sport" for Pocket League)
-	reason           string
-	search           *appSearch
-	send             *appSend
+	slug, name string
+	reason     string
+	answer     string // the scope an instant answer reads with ("tasks:read"); "" = none
+	send       *appSend
 }
 
 func (a pocketApp) scopes() []string {
 	var out []string
-	if a.search != nil {
-		out = append(out, a.search.scope)
+	if a.answer != "" {
+		out = append(out, a.answer)
 	}
-	if a.send != nil && (a.search == nil || a.send.scope != a.search.scope) {
+	if a.send != nil && a.send.scope != a.answer {
 		out = append(out, a.send.scope)
 	}
 	return out
@@ -194,10 +173,10 @@ func (s *Server) siblingFor(ctx context.Context, u *store.User, st store.Setting
 	return &siblingConn{client: pocket.New(tok.URL, tok.AccessToken, 10*time.Second), via: modeCore, public: firstNonEmpty(c.Public, firstNonEmpty(tok.PublicURL, tok.URL))}, nil
 }
 
-// connStatus says, without issuing anything, how a person reaches an app.
-// searchOn: the app is searched through the search capability, whose link is
-// on, so its own search scope is not needed for that.
-func (s *Server) connStatus(ctx context.Context, u *store.User, st store.Settings, a pocketApp, searchOn bool) (eff, via, detail string) {
+// connStatus says, without issuing anything, how a person reaches an app:
+// its own scopes and, when it offers the search capability (cap), that link
+// too.
+func (s *Server) connStatus(ctx context.Context, u *store.User, st store.Settings, a pocketApp, cap *core.CapableApp) (eff, via, detail string) {
 	c := st.Apps[a.slug]
 	eff = s.connMode(c.Mode, c.Token)
 	switch eff {
@@ -220,22 +199,25 @@ func (s *Server) connStatus(ctx context.Context, u *store.User, st store.Setting
 	for _, l := range list {
 		state[l.Scope] = l
 	}
+	if cap != nil {
+		state[core.ScopeSearch] = core.LinkState{Scope: core.ScopeSearch, On: cap.On, State: cap.State}
+	}
+	scopes := a.scopes()
+	if cap != nil {
+		scopes = append(scopes, core.ScopeSearch)
+	}
 	var on, off []string
 	reason := ""
-	for _, sc := range a.scopes() {
+	for _, sc := range scopes {
 		l, ok := state[sc]
 		if ok && l.On {
-			on = append(on, sc)
-			continue
-		}
-		if searchOn && a.search != nil && sc == a.search.scope && (a.send == nil || a.send.scope != sc) {
 			on = append(on, sc)
 			continue
 		}
 		off = append(off, sc)
 		if reason == "" {
 			reason = "not_declared"
-			if ok {
+			if ok && l.State != "" {
 				reason = l.State
 			}
 		}
@@ -254,7 +236,7 @@ func (s *Server) connStatus(ctx context.Context, u *store.User, st store.Setting
 	return eff, modeCore, "partly: " + strings.Join(off, ", ") + " off (" + text + ")"
 }
 
-// ---- reading rows out of another app's JSON ----
+// ---- reading another app's answer ----
 
 func pick(row map[string]any, paths []string) string {
 	for _, p := range paths {
@@ -283,29 +265,6 @@ func pick(row map[string]any, paths []string) string {
 	return ""
 }
 
-func rowsOf(v any, key string) []map[string]any {
-	if key != "" {
-		m, ok := v.(map[string]any)
-		if !ok {
-			return nil
-		}
-		for _, k := range strings.Split(key, ".") {
-			v = m[k]
-			if mm, ok := v.(map[string]any); ok {
-				m = mm
-			}
-		}
-	}
-	list, _ := v.([]any)
-	out := make([]map[string]any, 0, len(list))
-	for _, x := range list {
-		if m, ok := x.(map[string]any); ok {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
 // appItem is one match in a Pocket app.
 type appItem struct {
 	Title   string `json:"title"`
@@ -321,7 +280,7 @@ type appItem struct {
 type appSection struct {
 	App   string    `json:"app"`
 	Name  string    `json:"name"`
-	Icon  string    `json:"icon,omitempty"` // the app's own icon, for an app found through Pocket Core
+	Icon  string    `json:"icon,omitempty"` // the app's own icon, when Pocket Core names the app
 	Items []appItem `json:"items"`
 	Error string    `json:"error,omitempty"`
 	Off   bool      `json:"off,omitempty"` // not connected (a hint, not an error)
@@ -329,7 +288,7 @@ type appSection struct {
 	MS    int64     `json:"ms"`
 }
 
-var reRouteField = regexp.MustCompile(`\{([a-z_.]+)(\*?)\}`)
+var reRouteField = regexp.MustCompile(`\{([a-z_.]+)\}`)
 
 // itemURL is an item's page in the app: route with {id} (the item's id, from
 // idPaths) and any other {field} filled from the row; the app's start page
@@ -341,7 +300,7 @@ func itemURL(public, route string, row map[string]any, idPaths []string) string 
 	}
 	missing := false
 	out := reRouteField.ReplaceAllStringFunc(route, func(m string) string {
-		name := strings.TrimSuffix(m[1:len(m)-1], "*")
+		name := m[1 : len(m)-1]
 		v := ""
 		if name == "id" {
 			v = pick(row, idPaths)
@@ -351,14 +310,6 @@ func itemURL(public, route string, row map[string]any, idPaths []string) string 
 		if v == "" {
 			missing = true
 		}
-		// {path*}: a path, its slashes kept and each part escaped ("/My docs/a.pdf" → "/My%20docs/a.pdf")
-		if strings.HasSuffix(m, "*}") {
-			parts := strings.Split(v, "/")
-			for i, p := range parts {
-				parts[i] = url.PathEscape(p)
-			}
-			return strings.Join(parts, "/")
-		}
 		return url.PathEscape(v)
 	})
 	if missing {
@@ -367,71 +318,31 @@ func itemURL(public, route string, row map[string]any, idPaths []string) string 
 	return public + out
 }
 
-func (s *Server) searchApp(ctx context.Context, u *store.User, st store.Settings, a pocketApp, q string, limit int) appSection {
+// searchDirect searches an app the person reaches directly, with their own
+// address and token, on the search capability's route: the same answer Core
+// would pass on, without Core.
+func (s *Server) searchDirect(ctx context.Context, u *store.User, st store.Settings, a pocketApp, q string, limit int) appSection {
 	sec := appSection{App: a.slug, Name: a.name, Items: []appItem{}}
 	start := time.Now()
 	defer func() { sec.MS = time.Since(start).Milliseconds() }()
-	sib, err := s.siblingFor(ctx, u, st, a, a.search.scope)
+	sib, err := s.siblingFor(ctx, u, st, a, core.ScopeSearch)
 	if err != nil {
 		sec.Error, sec.Off = err.Error(), isNotConnected(err)
 		return sec
 	}
-	params := url.Values{a.search.q: {q}}
-	for k, v := range a.search.extra {
-		params[k] = v
-	}
-	var raw any
-	if err := sib.client.Get(ctx, a.search.path, params, &raw); err != nil {
+	var res core.SearchResults
+	if err := sib.client.Get(ctx, core.SearchPath, url.Values{"q": {q}, "limit": {strconv.Itoa(limit)}}, &res); err != nil {
 		sec.Error = a.name + " did not answer: " + err.Error()
 		return sec
 	}
-	ql := strings.ToLower(q)
-	rows := rowsOf(raw, a.search.list)
-	if a.search.rowsOf != nil {
-		rows = a.search.rowsOf(raw)
-	}
-	for _, row := range rows {
-		it := appItem{Title: pick(row, a.search.title), Snippet: pick(row, a.search.snippet), Date: pick(row, a.search.date), Link: pick(row, a.search.link), Kind: a.search.kind}
-		if a.search.titleOf != nil {
-			if t := a.search.titleOf(row); t != "" {
-				it.Title = t
-			}
-		}
-		if a.search.kindOf != nil {
-			if k := a.search.kindOf(row); k != "" {
-				it.Kind = k
-			}
-		}
-		if a.search.snippetOf != nil {
-			if sn := a.search.snippetOf(row); sn != "" {
-				it.Snippet = sn
-			}
-		}
-		if it.Title == "" {
-			it.Title = it.Link
-		}
-		if it.Title == "" {
-			continue
-		}
-		// endpoints that only list (no text search) are filtered here
-		if a.search.q == "" && !strings.Contains(strings.ToLower(it.Title+" "+it.Snippet+" "+it.Link), ql) {
-			continue
-		}
-		it.Snippet = cleanSnippet(it.Snippet)
-		it.Strong = strongMatch(it.Title, q)
-		route := a.search.route
-		if a.search.routeOf != nil {
-			if r := a.search.routeOf(row); r != "" {
-				route = r
-			}
-		}
-		it.URL = itemURL(sib.public, route, row, a.search.id)
-		sec.Items = append(sec.Items, it)
-		if len(sec.Items) >= limit {
-			break
+	public := strings.TrimRight(sib.public, "/")
+	for i, it := range res.Items {
+		if strings.HasPrefix(it.URL, "/") {
+			res.Items[i].URL = public + it.URL
 		}
 	}
-	sec.More = itemURL(sib.public, "", nil, nil)
+	sec.Items = appItems(res.Items, public, "", "", q, limit)
+	sec.More = public + "/"
 	return sec
 }
 
@@ -462,8 +373,9 @@ func cleanSnippet(s string) string {
 }
 
 // handleSearchApps: GET /api/v1/search/apps?q=&app= — the person's Pocket
-// apps, searched at the same time (each bounded to a few seconds): the
-// table's apps, and every app that offers the search capability.
+// apps, searched at the same time (each bounded to a few seconds): every app
+// that offers the search capability, and the table's apps the person reaches
+// directly.
 func (s *Server) handleSearchApps(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	u := userFrom(ctx)
@@ -482,7 +394,7 @@ func (s *Server) handleSearchApps(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"query": q, "sections": demoSections(q, only, limit)})
 		return
 	}
-	// the table's apps and the ones that offer the search capability (capable.go)
+	// the apps that offer the search capability and the ones reached directly (capable.go)
 	apps := s.searchTargets(ctx, u, st, only)
 	out := make([]appSection, len(apps))
 	var wg sync.WaitGroup
@@ -504,7 +416,9 @@ func (s *Server) handleSearchApps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"query": q, "sections": out})
 }
 
-// handleApps lists the Pocket apps Search can use and how the person is connected.
+// handleApps lists the Pocket apps Search can use and how the person is
+// connected: the table's apps (with a direct connection), and every other app
+// that offers the search capability, all by name.
 func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	u := userFrom(ctx)
@@ -521,21 +435,39 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		Via     string   `json:"via"`  // core | direct | "" (not connected)
 		Detail  string   `json:"detail"`
 		InSerps bool     `json:"in_results"`
-		Icon    string   `json:"icon"`       // the app's own icon (an address), "" for the table's apps
+		Icon    string   `json:"icon"`       // the app's own icon (an address), for an app Pocket Core names
 		Found   bool     `json:"discovered"` // found through Pocket Core on its own: no direct connection
 	}
 	capable := s.capableApps(ctx, u)
 	bySlug := capableBySlug(capable)
+	bangs := capBangs(capable)
 	out := make([]row, len(pocketApps))
 	var wg sync.WaitGroup
 	for i, a := range pocketApps {
 		wg.Add(1)
 		go func(i int, a pocketApp) {
 			defer wg.Done()
-			eff, via, detail := s.connStatus(ctx, u, st, a, bySlug[a.slug].On)
+			var cp *core.CapableApp
+			if ca, ok := bySlug[a.slug]; ok {
+				cp = &ca
+			}
+			eff, via, detail := s.connStatus(ctx, u, st, a, cp)
 			c := st.Apps[a.slug]
-			rw := row{Slug: a.slug, Name: a.name, Reason: a.reason, Scopes: a.scopes(), Search: a.search != nil, Bang: a.bang,
-				Mode: eff, Via: via, Detail: detail, InSerps: a.search != nil && (c.Search == nil || *c.Search)}
+			rw := row{Slug: a.slug, Name: a.name, Reason: a.reason, Scopes: a.scopes(), Mode: eff, Via: via, Detail: detail}
+			// searched through Pocket Core when it offers the capability, or on
+			// its own route when the person reaches it directly
+			rw.Search = cp != nil || eff == modeDirect
+			if cp != nil {
+				rw.Reason = strings.TrimSuffix(capReason(*cp), ".") + ". " + a.reason
+				rw.Scopes = append(rw.Scopes, core.ScopeSearch)
+				rw.Icon = cp.Icon
+				if b := bangs[a.slug]; len(b) > 0 {
+					rw.Bang = b[0]
+				}
+			} else if eff == modeDirect {
+				rw.Bang = a.slug
+			}
+			rw.InSerps = rw.Search && (c.Search == nil || *c.Search)
 			if a.send != nil {
 				rw.Send = a.send.label
 			}
@@ -544,9 +476,10 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 	// the apps that offer the search capability and are not in the table
-	found := discoveredOf(capable)
-	bangs := capBangs(found)
-	for _, a := range found {
+	for _, a := range capable {
+		if _, ok := appBySlug(a.App); ok {
+			continue
+		}
 		c := st.Apps[a.App]
 		name := capName(a)
 		rw := row{Slug: a.App, Name: name, Reason: capReason(a), Scopes: []string{core.ScopeSearch}, Search: true,
@@ -564,6 +497,7 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, rw)
 	}
+	sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
 	writeJSON(w, http.StatusOK, out)
 }
 

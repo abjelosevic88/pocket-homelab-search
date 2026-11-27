@@ -287,14 +287,10 @@ func TestDiscoveredAppIsSearched(t *testing.T) {
 	if first := all[0].(map[string]any); first["app"] != "recipes" || len(first["items"].([]any)) != 4 || query.Get("limit") != "4" {
 		t.Fatalf("first section = %v (limit %q)", first, query.Get("limit"))
 	}
-	searchable := 0
-	for _, p := range pocketApps {
-		if p.search != nil {
-			searchable++
-		}
-	}
-	if len(all) != searchable+1 {
-		t.Fatalf("%d sections, want the table's %d and Recipes", len(all), searchable)
+	// the table's apps are reached through Core here and Core names none of
+	// them: Recipes is all there is
+	if len(all) != 1 {
+		t.Fatalf("%d sections, want Recipes only: %v", len(all), all)
 	}
 	// an app that scores its matches decides their order; equal scores keep theirs
 	m = a.ok(a.alice, "GET", "/api/v1/search/apps?q=scored&app=recipes", nil)
@@ -333,23 +329,22 @@ func TestDiscoveredAppIsSearched(t *testing.T) {
 	}
 }
 
-// Pocket Notes is in the table and has adopted the contract: with the
-// capability's link on it is searched through the contract, with it off (or
-// not approved yet) through the table's adapter as before, and a direct
-// connection never goes through Core.
+// Pocket Notes is in the table (a result can be kept as a note) and offers
+// the search capability: it is searched through the contract only, under the
+// table's name with its own icon and the bangs its manifest brings. With the
+// capability's link off it is not connected (there is no other way to search
+// it), and a direct connection asks the same route on the person's own
+// address with their own token.
 func TestTableAppWithTheCapability(t *testing.T) {
 	answer := func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case core.SearchPath:
-			_, _ = io.WriteString(w, `{"items":[{"id":"3","title":"Sourdough notes","snippet":"through the contract","kind":"note","url":"/note/3"}]}`)
-		case "/api/v1/search":
-			_, _ = io.WriteString(w, `[{"id":3,"title":"Sourdough notes","snippet":"the table's way"}]`)
-		default:
+		if r.URL.Path != core.SearchPath {
 			http.NotFound(w, r)
+			return
 		}
+		_, _ = io.WriteString(w, `{"items":[{"id":"3","title":"Sourdough notes","snippet":"through the contract","kind":"note","url":"/note/3"}]}`)
 	}
 	notes := &capApp{slug: "notes", name: "Notes (as Core calls it)", icon: "https://notes.example/favicon.svg", public: "https://notes.example",
-		search: &core.Searchable{What: "Your notes", Kinds: []string{"note"}, Bangs: []string{"notes", "jot"}}, legacy: map[string]bool{"notes:read": true}, answer: answer}
+		search: &core.Searchable{What: "Your notes", Kinds: []string{"note"}, Bangs: []string{"notes", "jot"}}, legacy: map[string]bool{"notes:write": false}, answer: answer}
 	f := newCapCore(t, notes)
 	a := capBox(t, f)
 	find := func(auth string) map[string]any {
@@ -370,46 +365,46 @@ func TestTableAppWithTheCapability(t *testing.T) {
 		}
 		return items[0].(map[string]any)["snippet"].(string)
 	}
-	// on: the contract, under the table's name and without another icon
+	// on: the contract, under the table's name and with the app's own icon
 	sec := find(a.alice)
-	if got := notes.asked(); snippet(sec) != "through the contract" || len(got) != 1 || got[0] != core.SearchPath || sec["name"] != "Pocket Notes" || sec["icon"] != nil {
+	if got := notes.asked(); snippet(sec) != "through the contract" || len(got) != 1 || got[0] != core.SearchPath || sec["name"] != "Pocket Notes" || sec["icon"] != "https://notes.example/favicon.svg" {
 		t.Fatalf("on: section %v, asked %v", sec, got)
 	}
 	// switched off a moment ago, while Search still believes it is on: Core
-	// refuses the token and the table's adapter answers in the same search
+	// refuses the token, the section says why and the app is not asked
 	f.set(func() { notes.state = "off_person" })
 	sec = find(a.alice)
-	if got := notes.asked(); snippet(sec) != "the table's way" || len(got) != 1 || got[0] != "/api/v1/search" {
-		t.Fatalf("just switched off: section %v, asked %v", sec, got)
+	if sec["off"] != true || !strings.Contains(fmt.Sprint(sec["error"]), "you switched the Search → Pocket Notes link off") || len(sec["items"].([]any)) != 0 || len(notes.asked()) != 0 {
+		t.Fatalf("just switched off: section %v, asked %v", sec, notes.asked())
 	}
-	// off and known to be off: the table's adapter straight away
+	// off and known to be off: Core was asked again, the app still is not
 	sec = find(a.alice)
-	auth, _ := notes.last()
-	if got := notes.asked(); snippet(sec) != "the table's way" || len(got) != 1 || got[0] != "/api/v1/search" || auth != "Bearer pcx_notes_notes:read_alice@example.com" {
-		t.Fatalf("off: section %v, asked %v as %q", sec, got, auth)
+	if sec["off"] != true || len(notes.asked()) != 0 || f.count() != 2 {
+		t.Fatalf("off: section %v, asked %v, Core asked %d times", sec, notes.asked(), f.count())
 	}
-	// the table's own link off as well: not connected, as before
-	f.set(func() { notes.legacy["notes:read"] = false })
-	if sec = find(a.alice); sec["off"] != true || len(notes.asked()) != 0 {
-		t.Fatalf("both off: section %v, asked %v", sec, notes.asked())
-	}
-	// the capability back on: searched again, and Settings says connected
-	// although the table's own link stays off
+	// the capability back on: searched again, and Settings shows one row for
+	// Notes, searched through Core, with its send link (notes:write) off
 	f.set(func() { notes.state = "on" })
 	a.forgetCapable()
 	if sec = find(a.alice); snippet(sec) != "through the contract" {
 		t.Fatalf("back on: section %v", sec)
 	}
 	_, _, list := a.call(a.alice, "GET", "/api/v1/apps", nil)
+	seen := 0
 	for _, x := range list {
 		row := x.(map[string]any)
 		if row["slug"] != "notes" {
 			continue
 		}
-		// notes:write (keeping a result as a note) is the table's own link and is off
-		if row["via"] != "core" || !strings.Contains(row["detail"].(string), "notes:write") || strings.Contains(row["detail"].(string), "notes:read") || row["discovered"] != false || row["icon"] != "" || row["bang"] != "notes" {
+		seen++
+		if row["via"] != "core" || !strings.Contains(row["detail"].(string), "notes:write") || strings.Contains(row["detail"].(string), core.ScopeSearch) || row["discovered"] != false ||
+			row["icon"] != "https://notes.example/favicon.svg" || row["bang"] != "notes" || row["can_search"] != true || row["in_results"] != true || row["send"] != "Save as a note" ||
+			fmt.Sprint(row["scopes"]) != "[notes:write pocket:search]" || row["reason"] != "Your notes. Keep a result as a note (title, link and snippet)" {
 			t.Fatalf("notes in Settings = %v", row)
 		}
+	}
+	if seen != 1 {
+		t.Fatalf("notes in Settings %d times", seen)
 	}
 	// the person's own browser address for the app still decides where the links go
 	a.ok(a.alice, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{"notes": map[string]any{"mode": "core", "public": "https://my-notes.example/"}}})
@@ -417,9 +412,14 @@ func TestTableAppWithTheCapability(t *testing.T) {
 	if it := sec["items"].([]any)[0].(map[string]any); it["url"] != "https://my-notes.example/note/3" || it["snippet"] != "through the contract" || sec["more"] != "https://my-notes.example/" {
 		t.Fatalf("own address: section %v", sec)
 	}
-	// a direct connection stays direct: the person's own address and token
+	// a direct connection stays direct: the same route on the person's own
+	// address, with their own token
 	direct := &capApp{answer: func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, `[{"id":3,"title":"Sourdough notes","snippet":"my own copy"}]`)
+		if r.URL.Path != core.SearchPath {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"items":[{"id":"3","title":"Sourdough notes","snippet":"my own copy","url":"/note/3"}]}`)
 	}}
 	direct.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		direct.mu.Lock()
@@ -430,8 +430,8 @@ func TestTableAppWithTheCapability(t *testing.T) {
 	t.Cleanup(direct.srv.Close)
 	a.ok(a.bob, "PUT", "/api/v1/settings", map[string]any{"apps": map[string]any{"notes": map[string]any{"mode": "direct", "url": direct.srv.URL, "token": "pnt_bob", "public": "https://notes.example"}}})
 	sec = find(a.bob)
-	auth, _ = direct.last()
-	if got := direct.asked(); snippet(sec) != "my own copy" || len(got) != 1 || got[0] != "/api/v1/search" || auth != "Bearer pnt_bob" || len(notes.asked()) != 0 {
+	auth, _ := direct.last()
+	if got := direct.asked(); snippet(sec) != "my own copy" || len(got) != 1 || got[0] != core.SearchPath || auth != "Bearer pnt_bob" || len(notes.asked()) != 0 {
 		t.Fatalf("direct: section %v, asked %v as %q, Core's copy asked %v", sec, got, auth, notes.asked())
 	}
 	// and switched off in Settings stays off
@@ -439,12 +439,11 @@ func TestTableAppWithTheCapability(t *testing.T) {
 	if sec = find(a.bob); sec["off"] != true || len(notes.asked()) != 0 {
 		t.Fatalf("off in Settings: section %v, asked %v", sec, notes.asked())
 	}
-	// the table keeps its bang; the app's own extra one is not taken over
-	if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape("!notes bread"), nil); m["redirect"] != "/search?cat=apps&app=notes&q=bread" {
-		t.Fatalf("!notes = %v", m["redirect"])
-	}
-	if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape("!jot bread"), nil); m["redirect"] != nil && m["redirect"] != "" {
-		t.Fatalf("!jot = %v", m["redirect"])
+	// its bangs are the ones its manifest brings
+	for _, q := range []string{"!notes bread", "!jot bread"} {
+		if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape(q), nil); m["redirect"] != "/search?cat=apps&app=notes&q=bread" {
+			t.Fatalf("%s = %v", q, m["redirect"])
+		}
 	}
 }
 
@@ -511,15 +510,15 @@ func TestDiscoveredAppBangs(t *testing.T) {
 		"!wine rye": "/search?cat=apps&app=cellar&q=rye",
 		"!a1 rye":   "/search?cat=apps&app=cellar&q=rye",
 		// taken words keep their meaning
-		"!w rye":     "https://en.wikipedia.org/wiki/Special:Search?search=rye",
-		"!notes rye": "/search?cat=apps&app=notes&q=rye",
+		"!w rye": "https://en.wikipedia.org/wiki/Special:Search?search=rye",
 	} {
 		if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape(q), nil); m["redirect"] != want {
 			t.Errorf("%q → %v, want %s", q, m["redirect"], want)
 		}
 	}
-	// words that are not shortcuts were never taken
-	for _, q := range []string{"!waytoolongtobeashortcutword rye", "!upper rye", "!wi-ne rye", "!bad rye"} {
+	// words that are not shortcuts were never taken, and "notes" stays Pocket
+	// Notes' name even while Core does not name Notes
+	for _, q := range []string{"!waytoolongtobeashortcutword rye", "!upper rye", "!wi-ne rye", "!bad rye", "!notes rye"} {
 		if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape(q), nil); m["redirect"] != nil && m["redirect"] != "" {
 			t.Errorf("%q → %v, want an ordinary search", q, m["redirect"])
 		}
@@ -538,7 +537,7 @@ func TestDiscoveredAppBangs(t *testing.T) {
 	for _, b := range a.ok(a.alice, "GET", "/api/v1/bangs", nil)["builtin"].([]any) {
 		count[b.(map[string]any)["trigger"].(string)+" "+b.(map[string]any)["name"].(string)]++
 	}
-	if count["recipes Pocket Recipes"] != 1 || count["wine Pocket Cellar"] != 1 || count["cook Pocket Cellar"] != 1 || count["cook Pocket Recipes"] != 0 || count["w Pocket Recipes"] != 0 || count["notes Pocket Recipes"] != 0 || count["notes Pocket Notes"] != 1 {
+	if count["recipes Pocket Recipes"] != 1 || count["wine Pocket Cellar"] != 1 || count["cook Pocket Cellar"] != 1 || count["cook Pocket Recipes"] != 0 || count["w Pocket Recipes"] != 0 || count["notes Pocket Recipes"] != 0 {
 		t.Fatalf("bangs = %v", count)
 	}
 	sug := a.ok(a.alice, "GET", "/api/v1/suggest?q="+url.QueryEscape("!reci"), nil)["bangs"].([]any)
@@ -648,39 +647,31 @@ func TestDiscoveredAppInSettings(t *testing.T) {
 	}
 }
 
-// Without Pocket Core, with an older Core, with a Core that lists nothing and
-// with one that does not answer, Search is exactly what it was: the table's
-// apps and nothing else.
-func TestNoCapabilitiesNothingChanges(t *testing.T) {
-	legacy := func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			http.NotFound(w, r)
-			return
-		}
-		_, _ = io.WriteString(w, `[{"id":3,"title":"Sourdough notes","snippet":"the table's way"}]`)
+// Without Pocket Core Search searches the table's apps the person reaches
+// directly and nothing else. With an older Core, a Core that lists nothing and
+// one that does not answer, no Pocket app is searched (none said it can be),
+// and Settings and the bangs still work.
+func TestWithoutCapabilities(t *testing.T) {
+	adapter := func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `[{"id":3,"title":"Sourdough notes"}]`)
 	}
-	searchable := 0
-	for _, p := range pocketApps {
-		if p.search != nil {
-			searchable++
-		}
-	}
-	same := func(t *testing.T, a *app) {
+	same := func(t *testing.T, a *app, sections, bangs int) {
 		t.Helper()
 		code, _, list := a.call(a.alice, "GET", "/api/v1/apps", nil)
 		if code != 200 || len(list) != len(pocketApps) {
 			t.Fatalf("GET /apps → %d, %d rows, want the table's %d", code, len(list), len(pocketApps))
 		}
-		for i, x := range list {
-			if row := x.(map[string]any); row["slug"] != pocketApps[i].slug || row["discovered"] != false || row["icon"] != "" {
-				t.Fatalf("row %d = %v", i, row)
+		for _, x := range list {
+			row := x.(map[string]any)
+			if _, ok := appBySlug(row["slug"].(string)); !ok || row["discovered"] != false || row["icon"] != "" {
+				t.Fatalf("row = %v", row)
 			}
 		}
-		if secs := a.ok(a.alice, "GET", "/api/v1/search/apps?q=sourdough", nil)["sections"].([]any); len(secs) != searchable {
-			t.Fatalf("%d sections, want the table's %d", len(secs), searchable)
+		if secs := a.ok(a.alice, "GET", "/api/v1/search/apps?q=sourdough", nil)["sections"].([]any); len(secs) != sections {
+			t.Fatalf("%d sections, want %d: %v", len(secs), sections, secs)
 		}
-		if n := len(a.ok(a.alice, "GET", "/api/v1/bangs", nil)["builtin"].([]any)); n != len(builtinBangs)+len(appBangs()) {
-			t.Fatalf("%d bangs, want %d", n, len(builtinBangs)+len(appBangs()))
+		if n := len(a.ok(a.alice, "GET", "/api/v1/bangs", nil)["builtin"].([]any)); n != len(builtinBangs)+bangs {
+			t.Fatalf("%d bangs, want %d", n, len(builtinBangs)+bangs)
 		}
 		if m := a.ok(a.alice, "GET", "/api/v1/search?q="+url.QueryEscape("!recipes rye"), nil); m["redirect"] != nil && m["redirect"] != "" {
 			t.Fatalf("!recipes = %v", m["redirect"])
@@ -693,8 +684,10 @@ func TestNoCapabilitiesNothingChanges(t *testing.T) {
 		}
 	}
 	t.Run("no Core", func(t *testing.T) {
+		// every table app is reached directly: each has a section (not set
+		// up yet) and its name as its bang
 		a := newApp(t)
-		same(t, a)
+		same(t, a, len(pocketApps), len(pocketApps))
 		a.s.capMu.Lock()
 		defer a.s.capMu.Unlock()
 		if len(a.s.capable) != 0 {
@@ -703,35 +696,29 @@ func TestNoCapabilitiesNothingChanges(t *testing.T) {
 	})
 	t.Run("an older Core", func(t *testing.T) {
 		// it has the table's links, ignores ?scope= and never names the apps
-		notes := &capApp{slug: "notes", name: "Pocket Notes", public: "https://notes.example", legacy: map[string]bool{"notes:read": true, "notes:write": true}, answer: legacy}
+		notes := &capApp{slug: "notes", name: "Pocket Notes", public: "https://notes.example", legacy: map[string]bool{"notes:read": true, "notes:write": true}, answer: adapter}
 		f := newCapCore(t, notes, recipesApp())
 		f.old = true
 		a := capBox(t, f)
-		same(t, a)
-		sec := sections(a.ok(a.alice, "GET", "/api/v1/search/apps?q=sourdough&app=notes", nil))["notes"]
-		if got := notes.asked(); len(sec["items"].([]any)) != 1 || len(got) == 0 || got[len(got)-1] != "/api/v1/search" {
-			t.Fatalf("notes = %v, asked %v", sec, got)
-		}
-		for _, p := range notes.asked() {
-			if p == core.SearchPath {
-				t.Fatalf("the contract's route was asked on an older Core: %v", notes.asked())
-			}
+		same(t, a, 0, 0)
+		if m := a.ok(a.alice, "GET", "/api/v1/search/apps?q=sourdough&app=notes", nil); len(m["sections"].([]any)) != 0 || len(notes.asked()) != 0 {
+			t.Fatalf("notes = %v, asked %v", m["sections"], notes.asked())
 		}
 	})
 	t.Run("nothing offers it", func(t *testing.T) {
 		a := capBox(t, newCapCore(t))
-		same(t, a)
+		same(t, a, 0, 0)
 	})
 	t.Run("Core does not answer", func(t *testing.T) {
-		notes := &capApp{slug: "notes", name: "Pocket Notes", public: "https://notes.example", search: &core.Searchable{}, legacy: map[string]bool{"notes:read": true, "notes:write": true}, answer: legacy}
+		notes := &capApp{slug: "notes", name: "Pocket Notes", public: "https://notes.example", search: &core.Searchable{}, legacy: map[string]bool{"notes:read": true, "notes:write": true}, answer: adapter}
 		f := newCapCore(t, notes, recipesApp())
 		f.down = true
 		a := capBox(t, f)
-		same(t, a)
-		// the table's adapter still works, and Core is not asked again on every search
-		sec := sections(a.ok(a.alice, "GET", "/api/v1/search/apps?q=sourdough&app=notes", nil))["notes"]
-		if n := f.count(); len(sec["items"].([]any)) != 1 || n != 1 {
-			t.Fatalf("notes = %v, Core asked %d times", sec, n)
+		same(t, a, 0, 0)
+		// and Core is not asked again on every search
+		a.ok(a.alice, "GET", "/api/v1/search/apps?q=sourdough&app=notes", nil)
+		if n := f.count(); n != 1 || len(notes.asked()) != 0 {
+			t.Fatalf("Core asked %d times, notes asked %v", n, notes.asked())
 		}
 	})
 }
