@@ -50,7 +50,8 @@ export interface InstantAnswer { kind: InstantKind; title: string; value: string
 export interface Lens { id: number; name: string; icon: string; sites: string; boost: string; hide: string; words: string; language: string; position: number; created_at: string; updated_at: string }
 
 export interface AppItem { title: string; snippet: string; date?: string; url: string; link?: string; kind: string; strong?: boolean }
-export interface AppSection { app: string; name: string; items: AppItem[]; error?: string; off?: boolean; more?: string; ms: number }
+/** icon: the app's own picture (an address), for an app found through Pocket Core. */
+export interface AppSection { app: string; name: string; icon?: string; items: AppItem[]; error?: string; off?: boolean; more?: string; ms: number }
 export interface AppsResult { query: string; sections: AppSection[] }
 
 /** A Pocket app Search can search or send results to, and how this person is connected. */
@@ -59,6 +60,10 @@ export interface PocketAppConn {
   can_search: boolean; send?: string; bang?: string
   mode: 'core' | 'direct' | 'off'; via: '' | 'core' | 'direct'; detail: string
   in_results: boolean
+  /** The app's own picture (an address); empty for the apps Search knows by itself. */
+  icon: string
+  /** Found through Pocket Core on its own (it says it can be searched): Pocket Core or off, no direct connection. */
+  discovered: boolean
 }
 
 export interface Answer { answer: string; sources: { n: number; title: string; url: string; read: boolean }[]; provider: string; ms: number }

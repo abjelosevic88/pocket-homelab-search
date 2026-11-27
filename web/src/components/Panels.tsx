@@ -5,7 +5,7 @@ import { api, ApiError, V1 } from '../lib/api'
 import { fmtDate, plural } from '../lib/format'
 import { imgURL, type Answer, type AppSection, type Infobox } from '../lib/types'
 import { Icon } from './icons'
-import { appIcon } from './send'
+import { AppIcon } from './send'
 import { SiteIcon } from './ResultCard'
 import { errMsg } from './ui'
 
@@ -110,7 +110,7 @@ export function AppSectionList({ s, compact }: { s: AppSection; compact?: boolea
   return (
     <div className={`apps-sec ${compact ? 'compact' : ''}`}>
       <div className="apps-sec-head">
-        <span className="apps-ico"><Icon name={appIcon(s.app)} size={14} /></span>
+        <AppIcon className="apps-ico" slug={s.app} icon={s.icon} size={14} />
         <span className="grow apps-name">{s.name.replace(/^Pocket /, '')}</span>
         {s.more && s.more !== '#' && <a className="muted xsmall" href={s.more} target="_blank" rel="noreferrer">Open app</a>}
       </div>

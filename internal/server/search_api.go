@@ -296,7 +296,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, _ := s.store.GetSettings(ctx, u.ID)
-	if to := s.resolveBang(ctx, u.ID, q); to != "" {
+	if to := s.resolveBang(ctx, u, q); to != "" {
 		writeJSON(w, http.StatusOK, searchOut{Query: q, Redirect: to, Results: []hit{}})
 		return
 	}
@@ -377,7 +377,7 @@ func (s *Server) handleSuggest(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(trimmed, "!") && !strings.Contains(trimmed, " ") {
 		pre := strings.ToLower(strings.TrimPrefix(trimmed, "!"))
 		var bs []bang
-		for _, b := range s.allBangs(ctx, u.ID) {
+		for _, b := range s.allBangs(ctx, u) {
 			if strings.HasPrefix(b.Trigger, pre) {
 				bs = append(bs, b)
 			}
@@ -507,7 +507,7 @@ func (s *Server) handleSearchPage(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if q != "" {
 		if u, err := s.resolveUser(r); err == nil && u != nil {
-			if to := s.resolveBang(r.Context(), u.ID, q); to != "" {
+			if to := s.resolveBang(r.Context(), u, q); to != "" {
 				w.Header().Set("Cache-Control", "no-store")
 				http.Redirect(w, r, to, http.StatusFound)
 				return
@@ -725,7 +725,8 @@ func (s *Server) handleListBangs(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "bangs")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"mine": mine, "builtin": append(append([]bang{}, builtinBangs...), appBangs()...)})
+	builtin := append(append([]bang{}, builtinBangs...), appBangs()...)
+	writeJSON(w, http.StatusOK, map[string]any{"mine": mine, "builtin": append(builtin, s.discoveredBangs(ctx, userFrom(ctx))...)})
 }
 
 func (s *Server) handleCreateBang(w http.ResponseWriter, r *http.Request) {

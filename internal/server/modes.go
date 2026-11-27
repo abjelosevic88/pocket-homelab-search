@@ -17,7 +17,8 @@ import (
 // disconnects; one batched call for everybody. Report only: failures are
 // logged and nothing depends on them.
 
-// connModes is every person's effective mode for every Pocket app.
+// connModes is every person's effective mode for every Pocket app in the
+// table, and "off" for an app found through Core that they switched off.
 func (s *Server) connModes(ctx context.Context) ([]core.ConnMode, error) {
 	users, err := s.store.ListUsers(ctx)
 	if err != nil {
@@ -35,6 +36,15 @@ func (s *Server) connModes(ctx context.Context) ([]core.ConnMode, error) {
 		for _, a := range pocketApps {
 			c := st.Apps[a.slug]
 			out = append(out, core.ConnMode{User: u.Email, Target: a.slug, Mode: s.connMode(c.Mode, c.Token)})
+		}
+		// Apps found through Pocket Core (capable.go) are Core's own links, so
+		// Core knows how they stand; listing them for everybody would mean
+		// asking Core once per person. The one thing it cannot see is a person
+		// switching such an app off here, and that is in their settings.
+		for slug, c := range st.Apps {
+			if _, ok := appBySlug(slug); !ok && c.Mode == modeOff {
+				out = append(out, core.ConnMode{User: u.Email, Target: slug, Mode: modeOff})
+			}
 		}
 	}
 	return out, nil

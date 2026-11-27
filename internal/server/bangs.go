@@ -123,15 +123,17 @@ func appBangs() []bang {
 	return out
 }
 
-// allBangs is everything a person can use: their own first.
-func (s *Server) allBangs(ctx context.Context, uid int64) []bang {
-	mine, _ := s.store.ListBangs(ctx, uid)
+// allBangs is everything a person can use: their own first, and last the
+// ones of the apps found through Pocket Core for them (capable.go).
+func (s *Server) allBangs(ctx context.Context, u *store.User) []bang {
+	mine, _ := s.store.ListBangs(ctx, u.ID)
 	out := make([]bang, 0, len(mine)+len(builtinBangs)+16)
 	for _, b := range mine {
 		out = append(out, bang{Trigger: b.Trigger, Name: b.Name, URL: b.URL, Home: homeOf(b.URL), Group: "Yours", Own: true, ID: b.ID})
 	}
 	out = append(out, builtinBangs...)
-	return append(out, appBangs()...)
+	out = append(out, appBangs()...)
+	return append(out, s.discoveredBangs(ctx, u)...)
 }
 
 func homeOf(u string) string {
@@ -142,13 +144,13 @@ func homeOf(u string) string {
 }
 
 // resolveBang turns a search with a bang into the address to go to ("" = no bang).
-func (s *Server) resolveBang(ctx context.Context, uid int64, q string) string {
+func (s *Server) resolveBang(ctx context.Context, u *store.User, q string) string {
 	trigger, rest, ok := splitBang(q)
 	if !ok {
 		return ""
 	}
-	if own, err := s.store.FindBang(ctx, uid, trigger); err == nil {
-		s.store.UsedBang(ctx, uid, own.ID)
+	if own, err := s.store.FindBang(ctx, u.ID, trigger); err == nil {
+		s.store.UsedBang(ctx, u.ID, own.ID)
 		return fill(bang{URL: own.URL, Home: homeOf(own.URL)}, rest)
 	}
 	for _, list := range [][]bang{builtinBangs, appBangs()} {
@@ -156,6 +158,13 @@ func (s *Server) resolveBang(ctx context.Context, uid int64, q string) string {
 			if b.Trigger == trigger {
 				return fill(b, rest)
 			}
+		}
+	}
+	// a word none of those know: an app found through Pocket Core may have
+	// brought it (asked only now, so an ordinary search never waits on Core)
+	for _, b := range s.discoveredBangs(ctx, u) {
+		if b.Trigger == trigger {
+			return fill(b, rest)
 		}
 	}
 	return ""

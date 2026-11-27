@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { api, V1 } from '../lib/api'
 import type { PocketAppConn, Save } from '../lib/types'
+import { Icon } from './icons'
 import { errMsg, type MenuItem, useToast } from './ui'
 
 let cache: Promise<PocketAppConn[]> | null = null
@@ -66,6 +67,20 @@ const ICONS: Record<string, string> = {
   photos: 'image', watch: 'video', audiobooks: 'play', mail: 'mail', blog: 'edit', chat: 'hash', forms: 'list', booking: 'calendar', cameras: 'video', crm: 'trending-up', league: 'ball', tables: 'grid', rentals: 'key', trails: 'flag', karaoke: 'mic', printfarm: 'printer', gamebuilder: 'gamepad', sky: 'moon',
 }
 export const appIcon = (slug: string) => ICONS[slug] || 'layers'
+
+/** An app's icon in its little box: the app's own picture when it has one (an
+ *  app found through Pocket Core), else the glyph — also when the picture
+ *  does not load. */
+export function AppIcon({ slug, icon, size, className, glyph }: { slug: string; icon?: string; size: number; className: string; glyph?: string }) {
+  const [broken, setBroken] = useState(false)
+  useEffect(() => { setBroken(false) }, [icon])
+  const img = !!icon && /^https?:\/\//.test(icon) && !broken
+  return (
+    <span className={`${className}${img ? ' has-img' : ''}`}>
+      {img ? <img src={icon} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setBroken(true)} /> : <Icon name={glyph || appIcon(slug)} size={size} />}
+    </span>
+  )
+}
 
 /** "In Reader", "In Notes"… for a saved badge. */
 export function savedLabel(app: string, apps: PocketAppConn[]) {

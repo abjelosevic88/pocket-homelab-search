@@ -8,6 +8,7 @@ import type { AIStatus, APIToken, AppConnSetting, Category, EngineRow, Engines, 
 import { DATE_FORMATS, TIME_FORMATS, fmtBytes, fmtDateTime, type DateFormat, type TimeFormat } from '../lib/format'
 import { Avatar, Confirm, CopyField, CoreHint, Field, Loading, Modal, Segmented, SettingRow, Switch, Tabs, useAsync, useIsMobile, useToast, errMsg } from '../components/ui'
 import { Icon } from '../components/icons'
+import { AppIcon } from '../components/send'
 import { Select } from '../components/Select'
 import { ShortcutsSheet } from '../components/ShortcutsSheet'
 import { PocketModelSelect } from '../components/PocketModelSelect'
@@ -92,11 +93,11 @@ export default function Settings() {
 }
 
 /** A settings card: title, explanation, actions on the right — Pocket Calendar's section. */
-function Section({ title, sub, icon, actions, children }: { title: React.ReactNode; sub?: React.ReactNode; icon?: string; actions?: React.ReactNode; children?: React.ReactNode }) {
+function Section({ title, sub, icon, img, actions, children }: { title: React.ReactNode; sub?: React.ReactNode; icon?: string; img?: string; actions?: React.ReactNode; children?: React.ReactNode }) {
   return (
     <section className="set-section">
       <div className="set-section-head">
-        {icon && <span className="set-app-ico"><Icon name={icon} size={17} /></span>}
+        {icon && <AppIcon className="set-app-ico" slug="" icon={img} glyph={icon} size={17} />}
         <div className="grow"><h3>{title}</h3>{sub && <p>{sub}</p>}</div>
         {actions && <div className="row">{actions}</div>}
       </div>
@@ -265,10 +266,13 @@ function ConnectedApps() {
   if (!settings) return <Loading />
   const coreOn = settings.core_configured && settings.core_registered !== false
 
-  const saveApp = async (slug: string, patch: Partial<AppConnSetting>, msg = 'Saved') => {
+  const saveApp = async (app: PocketAppConn, patch: Partial<AppConnSetting>, msg = 'Saved') => {
+    const slug = app.slug
     const cur = { ...BLANK, ...(settings.apps?.[slug] || {}) }
+    // an app found through Pocket Core has no address or token: only its mode and the in-results switch
+    const body = app.discovered ? { mode: cur.mode === 'direct' ? '' : cur.mode, search: cur.search, ...patch } : { ...cur, ...patch }
     try {
-      const s = await api.put<SettingsT>(`${V1}/settings`, { apps: { [slug]: { ...cur, ...patch } } })
+      const s = await api.put<SettingsT>(`${V1}/settings`, { apps: { [slug]: body } })
       setSettings(s); toast(msg); load()
     } catch (e) { toast(errMsg(e), 'err') }
   }
@@ -289,7 +293,7 @@ function ConnectedApps() {
       {error && <div className="callout bad"><Icon name="alert" size={15} /><span>{error}</span></div>}
       {!apps && !error && <Loading />}
       {apps?.map(a => <AppRow key={a.slug} app={a} saved={{ ...BLANK, ...(settings.apps?.[a.slug] || {}) }} coreOn={coreOn} appsInResults={settings.apps_in_results}
-        onSave={(p, msg) => saveApp(a.slug, p, msg)} onDisconnect={() => disconnect(a.slug)} />)}
+        onSave={(p, msg) => saveApp(a, p, msg)} onDisconnect={() => disconnect(a.slug)} />)}
       <Section title="Other Pocket apps searching for you" icon="link" sub="Search offers web search to the rest of the box through Pocket Core (switched on per app in Pocket Core → Links).">
         <dl className="set-dl">
           <div><dt>search:read</dt><dd className="muted">Run a web search with your engines and site rules, read a page's article text — for Pocket AI answers, Pocket Flows and the like. Nothing is added to your history; your history, rules and settings stay closed.</dd></div>
@@ -308,13 +312,14 @@ function AppRow({ app, saved, coreOn, appsInResults, onSave, onDisconnect }: {
   useEffect(() => { setD({ url: saved.url, public: saved.public, token: saved.token }) }, [saved.url, saved.public, saved.token])
   const mode: Mode = !coreOn && app.mode === 'core' ? 'off' : app.mode
   const ok = app.via !== '' && mode !== 'off'
-  const showDirect = !coreOn || mode === 'direct' || advanced
+  // an app found through Pocket Core is reached through Core or not at all
+  const showDirect = !app.discovered && (!coreOn || mode === 'direct' || advanced)
   const line = mode === 'off' ? `Off: Search does not talk to ${app.name}.`
     : mode === 'core' ? (ok ? `Connected through Pocket Core, as you${app.detail ? ` (${app.detail})` : ''}.` : `Not connected: ${app.detail}.`)
     : (ok ? `Direct connection with your own ${app.name} address and token.` : `Not connected: ${app.detail || 'add the address and a token'}.`)
   const what = [app.can_search && 'searched', app.send && app.send.toLowerCase()].filter(Boolean).join(' · ')
   return (
-    <Section title={app.name} icon="layers" actions={mode === 'off' ? <span className="badge">off</span> : ok ? <span className="badge ok">{app.via === 'core' ? 'Pocket Core' : 'direct'}</span> : <span className="badge warn">not connected</span>}
+    <Section title={app.name} icon="layers" img={app.icon} actions={mode === 'off' ? <span className="badge">off</span> : ok ? <span className="badge ok">{app.via === 'core' ? 'Pocket Core' : 'direct'}</span> : <span className="badge warn">not connected</span>}
       sub={<>{app.reason}{what && <span className="app-what"> — {what}</span>}{app.bang && <> · bang <code>!{app.bang}</code></>}</>}>
       <div className="conn-block">
         <div className="conn-mode">
@@ -323,7 +328,7 @@ function AppRow({ app, saved, coreOn, appsInResults, onSave, onDisconnect }: {
             ...(showDirect ? [{ value: 'direct' as Mode, label: 'Direct', title: 'Your own address and API token' }] : []),
             { value: 'off', label: 'Off' },
           ]} />
-          {!showDirect && <button type="button" className="conn-advanced" onClick={() => setAdvanced(true)}>Advanced: connect directly with an address and token</button>}
+          {!showDirect && !app.discovered && <button type="button" className="conn-advanced" onClick={() => setAdvanced(true)}>Advanced: connect directly with an address and token</button>}
           {app.can_search && <label className="app-inres"><Switch size="sm" checked={app.in_results} disabled={mode === 'off'} onChange={v => onSave({ search: v }, v ? `${app.name} shows up in results` : `${app.name} left out of results`)} label={`${app.name} in results`} /><span className={`small ${appsInResults ? '' : 'muted'}`}>In results</span></label>}
         </div>
         <div className={`conn-status ${mode === 'off' ? '' : ok ? 'ok' : 'bad'}`}><span className="dot" />{line}</div>

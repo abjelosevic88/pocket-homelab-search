@@ -89,13 +89,14 @@ func appBySlug(slug string) (pocketApp, bool) {
 	return pocketApp{}, false
 }
 
-// linkUses is the manifest's Uses.
+// linkUses is the manifest's Uses: the table's apps one by one, and the
+// search capability in every app that offers it (capable.go).
 func linkUses() []core.Use {
-	out := make([]core.Use, 0, len(pocketApps))
+	out := make([]core.Use, 0, len(pocketApps)+1)
 	for _, a := range pocketApps {
 		out = append(out, core.Use{App: a.slug, Scopes: a.scopes(), Reason: a.reason})
 	}
-	return out
+	return append(out, core.UseEvery(core.ScopeSearch, "Find your things in every app that can be searched, beside the web"))
 }
 
 // Connection modes, chosen per person and per app in Settings.
@@ -194,7 +195,9 @@ func (s *Server) siblingFor(ctx context.Context, u *store.User, st store.Setting
 }
 
 // connStatus says, without issuing anything, how a person reaches an app.
-func (s *Server) connStatus(ctx context.Context, u *store.User, st store.Settings, a pocketApp) (eff, via, detail string) {
+// searchOn: the app is searched through the search capability, whose link is
+// on, so its own search scope is not needed for that.
+func (s *Server) connStatus(ctx context.Context, u *store.User, st store.Settings, a pocketApp, searchOn bool) (eff, via, detail string) {
 	c := st.Apps[a.slug]
 	eff = s.connMode(c.Mode, c.Token)
 	switch eff {
@@ -222,6 +225,10 @@ func (s *Server) connStatus(ctx context.Context, u *store.User, st store.Setting
 	for _, sc := range a.scopes() {
 		l, ok := state[sc]
 		if ok && l.On {
+			on = append(on, sc)
+			continue
+		}
+		if searchOn && a.search != nil && sc == a.search.scope && (a.send == nil || a.send.scope != sc) {
 			on = append(on, sc)
 			continue
 		}
@@ -314,6 +321,7 @@ type appItem struct {
 type appSection struct {
 	App   string    `json:"app"`
 	Name  string    `json:"name"`
+	Icon  string    `json:"icon,omitempty"` // the app's own icon, for an app found through Pocket Core
 	Items []appItem `json:"items"`
 	Error string    `json:"error,omitempty"`
 	Off   bool      `json:"off,omitempty"` // not connected (a hint, not an error)
@@ -409,8 +417,7 @@ func (s *Server) searchApp(ctx context.Context, u *store.User, st store.Settings
 		if a.search.q == "" && !strings.Contains(strings.ToLower(it.Title+" "+it.Snippet+" "+it.Link), ql) {
 			continue
 		}
-		// Pocket Files marks matched words with \x01…\x02
-		it.Snippet = oneLine(stripMarkup(strings.NewReplacer("\x01", "", "\x02", "").Replace(it.Snippet)), 220)
+		it.Snippet = cleanSnippet(it.Snippet)
 		it.Strong = strongMatch(it.Title, q)
 		route := a.search.route
 		if a.search.routeOf != nil {
@@ -448,8 +455,15 @@ var markup = strings.NewReplacer("**", "", "__", "", "##", "", "# ", "", "`", ""
 
 func stripMarkup(s string) string { return markup.Replace(s) }
 
+// cleanSnippet is a match's line of context as shown: no markup, one line.
+// Pocket Files marks matched words with \x01…\x02.
+func cleanSnippet(s string) string {
+	return oneLine(stripMarkup(strings.NewReplacer("\x01", "", "\x02", "").Replace(s)), 220)
+}
+
 // handleSearchApps: GET /api/v1/search/apps?q=&app= — the person's Pocket
-// apps, searched at the same time (each bounded to a few seconds).
+// apps, searched at the same time (each bounded to a few seconds): the
+// table's apps, and every app that offers the search capability.
 func (s *Server) handleSearchApps(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	u := userFrom(ctx)
@@ -468,29 +482,20 @@ func (s *Server) handleSearchApps(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"query": q, "sections": demoSections(q, only, limit)})
 		return
 	}
-	var apps []pocketApp
-	for _, a := range pocketApps {
-		if a.search == nil || (only != "" && a.slug != only) {
-			continue
-		}
-		c := st.Apps[a.slug]
-		if only == "" && c.Search != nil && !*c.Search {
-			continue
-		}
-		apps = append(apps, a)
-	}
+	// the table's apps and the ones that offer the search capability (capable.go)
+	apps := s.searchTargets(ctx, u, st, only)
 	out := make([]appSection, len(apps))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 6)
 	for i, a := range apps {
 		wg.Add(1)
-		go func(i int, a pocketApp) {
+		go func(i int, a searchTarget) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			actx, cancel := context.WithTimeout(ctx, 6*time.Second)
 			defer cancel()
-			out[i] = s.searchApp(actx, u, st, a, q, limit)
+			out[i] = s.searchOne(actx, u, st, a, q, limit)
 		}(i, a)
 	}
 	wg.Wait()
@@ -516,14 +521,18 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		Via     string   `json:"via"`  // core | direct | "" (not connected)
 		Detail  string   `json:"detail"`
 		InSerps bool     `json:"in_results"`
+		Icon    string   `json:"icon"`       // the app's own icon (an address), "" for the table's apps
+		Found   bool     `json:"discovered"` // found through Pocket Core on its own: no direct connection
 	}
+	capable := s.capableApps(ctx, u)
+	bySlug := capableBySlug(capable)
 	out := make([]row, len(pocketApps))
 	var wg sync.WaitGroup
 	for i, a := range pocketApps {
 		wg.Add(1)
 		go func(i int, a pocketApp) {
 			defer wg.Done()
-			eff, via, detail := s.connStatus(ctx, u, st, a)
+			eff, via, detail := s.connStatus(ctx, u, st, a, bySlug[a.slug].On)
 			c := st.Apps[a.slug]
 			rw := row{Slug: a.slug, Name: a.name, Reason: a.reason, Scopes: a.scopes(), Search: a.search != nil, Bang: a.bang,
 				Mode: eff, Via: via, Detail: detail, InSerps: a.search != nil && (c.Search == nil || *c.Search)}
@@ -534,6 +543,27 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		}(i, a)
 	}
 	wg.Wait()
+	// the apps that offer the search capability and are not in the table
+	found := discoveredOf(capable)
+	bangs := capBangs(found)
+	for _, a := range found {
+		c := st.Apps[a.App]
+		name := capName(a)
+		rw := row{Slug: a.App, Name: name, Reason: capReason(a), Scopes: []string{core.ScopeSearch}, Search: true,
+			Mode: discoveredMode(c), InSerps: c.Search == nil || *c.Search, Icon: a.Icon, Found: true}
+		if b := bangs[a.App]; len(b) > 0 {
+			rw.Bang = b[0]
+		}
+		switch {
+		case rw.Mode == modeOff:
+			rw.Detail = "switched off"
+		case a.On:
+			rw.Via = modeCore
+		default:
+			rw.Detail = capOffText(name, a.State, a.Detail)
+		}
+		out = append(out, rw)
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

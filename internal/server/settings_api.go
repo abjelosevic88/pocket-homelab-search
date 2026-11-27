@@ -148,6 +148,27 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		for slug, c := range in.Apps {
 			if _, ok := appBySlug(slug); !ok {
+				// an app found through Pocket Core (capable.go): Pocket Core or
+				// off and the in-results switch, never an address and a token
+				found, ok := s.discoveredApp(r.Context(), me, slug)
+				if !ok {
+					continue
+				}
+				if c.Mode == modeDirect {
+					writeErr(w, http.StatusBadRequest, capName(found)+" is reached through Pocket Core only: choose Pocket Core or Off")
+					return
+				}
+				old := cur.Apps[slug]
+				switch c.Mode {
+				case "", modeCore, modeOff:
+					old.Mode = c.Mode
+				}
+				if c.Search != nil {
+					v := *c.Search
+					old.Search = &v
+				}
+				cur.Apps[slug] = old
+				appsChanged = true
 				continue
 			}
 			old := cur.Apps[slug]

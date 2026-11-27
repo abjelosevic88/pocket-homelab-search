@@ -44,6 +44,8 @@ type Server struct {
 	results  map[string]cachedSearch // recent result pages per person
 	inflight map[string]*searchJob   // searches on their way, so a second ask waits for the first
 	modesMu  sync.Mutex
+	capMu    sync.Mutex
+	capable  map[string]capableEntry // who offers the search capability, per person, kept half a minute
 
 	oidcMu sync.Mutex
 	oidc   *oidcProvider // for the issuer in use; rebuilt when it changes
@@ -63,7 +65,7 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger, webFS fs.FS) *Se
 	return &Server{cfg: cfg, store: st, log: log, webFS: webFS, started: time.Now(), oidc: &oidcProvider{},
 		engine: eng, fetch: read.NewFetcher(cfg.UserAgent, cfg.FetchPrivate), online: instant.NewOnline(cfg.UserAgent),
 		core:    core.New(cfg.CoreURL, core.Options{DB: st.DB, TokenFile: cfg.DataDir + "/core.token", UserAgent: cfg.UserAgent}),
-		results: map[string]cachedSearch{}, inflight: map[string]*searchJob{}}
+		results: map[string]cachedSearch{}, inflight: map[string]*searchJob{}, capable: map[string]capableEntry{}}
 }
 
 // Bootstrap seeds the first admin (if configured), the owner's integration

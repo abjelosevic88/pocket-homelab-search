@@ -12,7 +12,7 @@ import { PreviewBody } from '../components/Preview'
 import { AppHitCard, ResultCard, SiteIcon, VideoCard } from '../components/ResultCard'
 import { SearchBox } from '../components/SearchBox'
 import { Select } from '../components/Select'
-import { useSend } from '../components/send'
+import { AppIcon, useSend } from '../components/send'
 import { copyText, Empty, errMsg, type MenuItem, Menu, modalOpen, Modal, rectOf, type Anchor, useMediaQuery, useToast } from '../components/ui'
 import { api, ApiError, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
@@ -45,7 +45,7 @@ const RULES: { action: RuleAction; label: (d: string) => string; icon: string; d
 
 type Failure = { status: number; message: string }
 /** A strong match from an app, shown among the web results. */
-type Inline = { app: string; name: string; item: AppItem }
+type Inline = { app: string; name: string; icon?: string; item: AppItem }
 const itemKey = (app: string, it: AppItem) => app + '\u0000' + it.url + '\u0000' + it.title
 /** Up to three strong matches, at most two from one app. */
 function pickInline(sections: AppSection[] | null): Inline[] {
@@ -53,7 +53,7 @@ function pickInline(sections: AppSection[] | null): Inline[] {
   for (const s of sections || []) {
     let n = 0
     for (const it of s.items) {
-      if (it.strong && n < 2 && out.length < 3) { out.push({ app: s.app, name: s.name, item: it }); n++ }
+      if (it.strong && n < 2 && out.length < 3) { out.push({ app: s.app, name: s.name, icon: s.icon, item: it }); n++ }
     }
   }
   return out
@@ -349,7 +349,7 @@ export default function Results() {
               {wide && cat === 'general' && res.instant && <InstantCard a={res.instant} />}
               {res.corrections.length > 0 && <p className="srp-fix">Did you mean <Link to={`/search?q=${encodeURIComponent(res.corrections[0])}${cat !== 'general' ? `&cat=${encodeURIComponent(cat)}` : ''}`}>{res.corrections[0]}</Link>?</p>}
               {res.answers.map((a, i) => <div key={i} className="srp-answer"><Icon name="zap" size={15} /><span className="grow">{a.text}</span>{a.url && <a className="small" href={a.url} target="_blank" rel="noreferrer noopener">Source</a>}</div>)}
-              {inline.length > 0 && <div className="res-list res-apps-inline">{inline.map(x => <AppHitCard key={itemKey(x.app, x.item)} item={x.item} app={x.app} appName={x.name} />)}</div>}
+              {inline.length > 0 && <div className="res-list res-apps-inline">{inline.map(x => <AppHitCard key={itemKey(x.app, x.item)} item={x.item} app={x.app} appName={x.name} icon={x.icon} />)}</div>}
               {hits.length === 0 && !res.pending && <Empty title="No results" icon="search">Nothing came back for “{q}”{time ? ' in this time range' : ''}.{res.suggestions.length > 0 && <div className="chips srp-sugg-empty">{res.suggestions.slice(0, 6).map(s => <Link key={s} className="chip" to={`/search?q=${encodeURIComponent(s)}`}>{s}</Link>)}</div>}</Empty>}
               {cat === 'images'
                 ? <ImageGrid hits={hits} onPick={setLightbox} />
@@ -437,7 +437,7 @@ function AppsPage({ sections, loading, q, onlyApp, onAll }: { sections: AppSecti
       {off.length > 0 && (
         <div className="apps-off">
           <div className="home-h">Not connected</div>
-          {off.map(s => <p key={s.app} className="small"><span className="apps-ico"><Icon name="layers" size={13} /></span> <b>{s.name}</b> <span className="muted">— {s.error}</span></p>)}
+          {off.map(s => <p key={s.app} className="small"><AppIcon className="apps-ico" slug={s.app} icon={s.icon} size={13} glyph="layers" /> <b>{s.name}</b> <span className="muted">— {s.error}</span></p>)}
           <Link className="btn sm" to="/settings/apps"><Icon name="link" size={14} />Connected apps</Link>
         </div>
       )}

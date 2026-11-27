@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom'
 import { fmtDate } from '../lib/format'
 import { faviconURL, imgURL, type AppItem, type Hit, type PocketAppConn } from '../lib/types'
 import { Icon } from './icons'
-import { appIcon, savedLabel } from './send'
+import { AppIcon, savedLabel } from './send'
 import { type MenuItem, MenuButton } from './ui'
 
 const RULE_LABEL: Record<string, string> = { pin: 'Always first', boost: 'Raised', lower: 'Lowered' }
@@ -105,7 +105,7 @@ export function VideoCard({ hit, active, newTab, menu, onOpen }: CardProps) {
 }
 
 /** A strong match from one of your Pocket apps, shown among the web results. */
-export function AppHitCard({ item, app, appName }: { item: AppItem; app: string; appName: string }) {
+export function AppHitCard({ item, app, appName, icon }: { item: AppItem; app: string; appName: string; icon?: string }) {
   const href = item.url === '#' ? undefined : item.url
   const d = item.date && /^\d{4}-\d{2}-\d{2}/.test(item.date) ? fmtDate(item.date.slice(0, 10)) : ''
   const meta = [item.kind, d].filter(Boolean).join(' · ')
@@ -113,7 +113,7 @@ export function AppHitCard({ item, app, appName }: { item: AppItem; app: string;
     <article className="res res-app" data-app={app}>
       <div className="res-main">
         <div className="res-site">
-          <span className="res-app-ico"><Icon name={appIcon(app)} size={13} /></span>
+          <AppIcon className="res-app-ico" slug={app} icon={icon} size={13} />
           <span className="res-app-badge">{appName}</span>
           {meta && <span className="res-path">{meta}</span>}
         </div>
